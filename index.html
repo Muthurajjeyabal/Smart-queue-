@@ -1,0 +1,2037 @@
+<!DOCTYPE html>
+<html lang="en" class="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Smart Hospital Queue</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; font-family: system-ui, -apple-system, sans-serif; }
+    body { background: #f8fafc; color: #0f172a; }
+    #splash {
+      position: fixed; inset: 0; z-index: 9999;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      background: linear-gradient(145deg, #0d9488, #0f766e 55%, #134e4a);
+      color: #fff; transition: opacity 0.4s ease;
+      animation: splashFade 2.4s ease-in forwards;
+    }
+    @keyframes splashFade {
+      0%, 75% { opacity: 1; }
+      100% { opacity: 0; visibility: hidden; pointer-events: none; }
+    }
+    #splash .logo {
+      width: 72px; height: 72px; border-radius: 18px;
+      background: rgba(255,255,255,0.15);
+      display: flex; align-items: center; justify-content: center; margin-bottom: 18px;
+    }
+    #splash h1 { font-size: 1.45rem; font-weight: 700; }
+    #splash p.sub { margin-top: 6px; font-size: 0.85rem; opacity: 0.9; }
+    .bar-wrap { margin-top: 26px; width: 170px; height: 4px; background: rgba(255,255,255,0.22); border-radius: 99px; overflow: hidden; }
+    #splash-bar { height: 100%; width: 20%; background: #fff; border-radius: 99px; animation: barFill 1.5s ease-out forwards; }
+    @keyframes barFill { to { width: 100%; } }
+    #splash-err { display: none; margin-top: 14px; font-size: 12px; color: #fecaca; text-align: center; max-width: 85%; }
+    #continue-btn {
+      margin-top: 22px; padding: 11px 26px; border-radius: 12px;
+      background: rgba(255,255,255,0.18); border: 1px solid rgba(255,255,255,0.35);
+      color: #fff; font-weight: 600; font-size: 14px;
+    }
+  </style>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: { sans: ['system-ui','sans-serif'], display: ['system-ui','sans-serif'] },
+          colors: {
+            brand: { 50:'#f0fdfa',100:'#ccfbf1',200:'#99f6e4',300:'#5eead4',400:'#2dd4bf',500:'#14b8a6',600:'#0d9488',700:'#0f766e',800:'#115e59',900:'#134e4a',950:'#042f2e' }
+          },
+          boxShadow: {
+            soft: '0 2px 15px -3px rgba(0,0,0,0.07), 0 10px 20px -2px rgba(0,0,0,0.04)',
+            card: '0 0 0 1px rgba(0,0,0,0.03), 0 2px 8px rgba(0,0,0,0.04), 0 12px 24px rgba(0,0,0,0.04)',
+            glow: '0 0 40px -10px rgba(20,184,166,0.35)'
+          },
+          animation: { 'slide-up': 'slide-up 0.45s cubic-bezier(0.16,1,0.3,1)' },
+          keyframes: { 'slide-up': { '0%': { opacity:'0', transform:'translateY(12px)' }, '100%': { opacity:'1', transform:'translateY(0)' } } }
+        }
+      }
+    };
+  </script>
+  <style>/* Smart Hospital Queue — Premium Styles */
+
+:root {
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #94a3b8;
+  border-radius: 999px;
+}
+.dark ::-webkit-scrollbar-thumb {
+  background: #475569;
+}
+
+/* Token number display */
+.token-display {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.03em;
+}
+
+/* Live indicator */
+.live-dot {
+  position: relative;
+}
+.live-dot::before {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.35;
+  animation: ping 1.5s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+@keyframes ping {
+  75%, 100% {
+    transform: scale(1.8);
+    opacity: 0;
+  }
+}
+
+/* Card hover lift */
+.card-interactive {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.card-interactive:active {
+  transform: scale(0.98);
+}
+
+/* Status badges */
+.badge {
+  @apply inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold tracking-wide;
+}
+
+/* Smooth page transitions */
+.view-enter {
+  animation: slide-up 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Number countdown */
+.countdown-digit {
+  font-variant-numeric: tabular-nums;
+  min-width: 1.15em;
+  display: inline-block;
+  text-align: center;
+}
+
+/* Glass effect */
+.glass {
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+.dark .glass {
+  background: rgba(15, 23, 42, 0.75);
+}
+
+/* Progress ring */
+.progress-ring {
+  transform: rotate(-90deg);
+}
+
+/* Hide number input arrows */
+input[type=number]::-webkit-inner-spin-button,
+input[type=number]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* Focus rings */
+button:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid #14b8a6;
+  outline-offset: 2px;
+}
+
+/* Mobile bottom nav safe area */
+.bottom-nav {
+  padding-bottom: max(0.75rem, var(--safe-bottom));
+}
+
+/* Print / accessibility */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+</style>
+  <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body class="bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans antialiased min-h-screen transition-colors duration-300">
+  <div id="app" class="min-h-screen flex flex-col"></div>
+  <div id="splash">
+    <div class="logo">
+      <svg width="34" height="34" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"/>
+      </svg>
+    </div>
+    <h1>Smart Hospital Queue</h1>
+    <p class="sub">Intelligent Time Management</p>
+    <div class="bar-wrap"><div id="splash-bar"></div></div>
+    <p id="splash-err"></p>
+    <button id="continue-btn" type="button" onclick="typeof hideSplash==='function'&&hideSplash()">Continue</button>
+  </div>
+  <div id="toast-container" class="fixed top-4 right-4 z-[100] flex flex-col gap-2 max-w-sm w-full pointer-events-none"></div>
+  <script>
+/**
+ * Smart Hospital Queue — Utilities
+ * Modular helpers for dates, formatting, IDs, etc.
+ */
+
+function uid(prefix = '') {
+  return `${prefix}${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function formatTime(date) {
+  if (!(date instanceof Date)) date = new Date(date);
+  return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+}
+
+function formatDate(date) {
+  if (!(date instanceof Date)) date = new Date(date);
+  return date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+}
+
+function formatDateTime(date) {
+  return `${formatDate(date)} · ${formatTime(date)}`;
+}
+
+function addMinutes(date, minutes) {
+  const d = new Date(date);
+  d.setMinutes(d.getMinutes() + minutes);
+  return d;
+}
+
+function minutesBetween(a, b) {
+  return Math.round((new Date(b) - new Date(a)) / 60000);
+}
+
+function clamp(n, min, max) {
+  return Math.min(Math.max(n, min), max);
+}
+
+function plural(n, one, many = one + 's') {
+  return n === 1 ? one : many;
+}
+
+function phoneMask(phone) {
+  const p = String(phone).replace(/\D/g, '');
+  if (p.length === 10) return `+91 ${p.slice(0, 5)} ${p.slice(5)}`;
+  return phone;
+}
+
+function todayKey() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function parseTimeToDate(timeStr) {
+  // "11:25 AM" → Date today
+  const [time, period] = timeStr.split(' ');
+  let [h, m] = time.split(':').map(Number);
+  if (period === 'PM' && h !== 12) h += 12;
+  if (period === 'AM' && h === 12) h = 0;
+  const d = new Date();
+  d.setHours(h, m, 0, 0);
+  return d;
+}
+
+function debounce(fn, ms = 250) {
+  let t;
+  return (...args) => {
+    clearTimeout(t);
+    t = setTimeout(() => fn(...args), ms);
+  };
+}
+
+function requestNotificationPermission() {
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
+}
+
+function showBrowserNotification(title, body, tag) {
+  if ('Notification' in window && Notification.permission === 'granted') {
+    try {
+      new Notification(title, {
+        body,
+        tag,
+        icon: '/assets/icon-192.png',
+        badge: '/assets/icon-192.png',
+      });
+    } catch (_) {}
+  }
+}
+
+function vibrate(pattern = [80, 40, 80]) {
+  if (navigator.vibrate) navigator.vibrate(pattern);
+}
+
+function copyToClipboard(text) {
+  return navigator.clipboard?.writeText(text);
+}
+
+/** Simple event bus for cross-module communication */
+const bus = {
+  _handlers: {},
+  on(event, fn) {
+    (this._handlers[event] ||= []).push(fn);
+    return () => this.off(event, fn);
+  },
+  off(event, fn) {
+    this._handlers[event] = (this._handlers[event] || []).filter(h => h !== fn);
+  },
+  emit(event, payload) {
+    (this._handlers[event] || []).forEach(fn => {
+      try { fn(payload); } catch (e) { console.error(e); }
+    });
+  },
+};
+
+
+/**
+ * Smart Hospital Queue — Central Store
+ * In-memory + localStorage persistence.
+ * Designed so it can later be swapped for API + WebSocket.
+ */
+
+
+const STORAGE_KEY = 'shq_v1';
+
+const DEFAULT_AVG_CONSULT = 10; // minutes
+
+/** @typedef {'waiting'|'consulting'|'completed'|'no_show'|'cancelled'} PatientStatus */
+/** @typedef {'available'|'consulting'|'paused'|'break'|'emergency_pause'|'finished'} DoctorStatus */
+
+function createInitialState() {
+  return {
+    version: 1,
+    day: todayKey(),
+    // Single doctor for V1 — architecture supports multi-doctor later
+    doctor: {
+      id: 'doc-1',
+      name: 'Dr. Ananya Sharma',
+      specialty: 'General Physician',
+      avgConsultMin: DEFAULT_AVG_CONSULT,
+      status: 'available', // available | consulting | paused | break | emergency_pause | finished
+      currentPatientId: null,
+      consultStartedAt: null,
+      totalSeenToday: 0,
+      pauseReason: null,
+    },
+    // Token counter for the day
+    nextToken: 1,
+    // All patients for today (and history)
+    patients: [],
+    // Active queue order (patient ids in sequence)
+    queue: [], // array of patient ids that are waiting or consulting
+    // Notifications log (for patient history of alerts)
+    notifications: [],
+    // Auth sessions (simulated)
+    sessions: {
+      patient: null, // { phone, patientId }
+      reception: null, // { name }
+      doctor: null, // { doctorId }
+    },
+    // Settings
+    settings: {
+      notifyAt: [30, 15, 10], // minutes before
+      recommendArriveEarlyMin: 15,
+      emergencyPriorityBoost: true,
+    },
+  };
+}
+
+class Store {
+  constructor() {
+    this.state = this._load() || createInitialState();
+    this._ensureDay();
+    this._subscribers = new Set();
+  }
+
+  _load() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return null;
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+
+  _save() {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(this.state));
+    } catch (e) {
+      console.warn('Storage full or unavailable', e);
+    }
+  }
+
+  _ensureDay() {
+    if (this.state.day !== todayKey()) {
+      // New day → soft reset operational data but keep history shape
+      this.state.day = todayKey();
+      this.state.nextToken = 1;
+      this.state.queue = [];
+      this.state.doctor.status = 'available';
+      this.state.doctor.currentPatientId = null;
+      this.state.doctor.consultStartedAt = null;
+      this.state.doctor.totalSeenToday = 0;
+      this.state.doctor.pauseReason = null;
+      // Keep patients for history; mark unfinished as cancelled conceptually
+      this.state.patients.forEach(p => {
+        if (p.status === 'waiting' || p.status === 'consulting') {
+          p.status = 'cancelled';
+        }
+      });
+      this._save();
+    }
+  }
+
+  subscribe(fn) {
+    this._subscribers.add(fn);
+    return () => this._subscribers.delete(fn);
+  }
+
+  notify() {
+    this._save();
+    this._subscribers.forEach(fn => {
+      try { fn(this.state); } catch (e) { console.error(e); }
+    });
+    bus.emit('store:update', this.state);
+  }
+
+  getState() {
+    return this.state;
+  }
+
+  // ---------- Auth (simulated OTP) ----------
+  loginPatient(phone, otp) {
+    // Any 6-digit OTP accepted for demo; in production validate against SMS
+    if (!/^\d{6}$/.test(otp)) return { ok: false, error: 'Invalid OTP' };
+    const clean = String(phone).replace(/\D/g, '').slice(-10);
+    if (clean.length !== 10) return { ok: false, error: 'Enter valid 10-digit mobile' };
+
+    // Find or create a patient profile for this phone (demo)
+    let existing = this.state.patients.find(p => p.phone === clean && p.day === this.state.day);
+    this.state.sessions.patient = { phone: clean, patientId: existing?.id || null };
+    this.notify();
+    return { ok: true, phone: clean };
+  }
+
+  loginReception(name = 'Reception Staff') {
+    this.state.sessions.reception = { name };
+    this.notify();
+    return { ok: true };
+  }
+
+  loginDoctor() {
+    this.state.sessions.doctor = { doctorId: this.state.doctor.id };
+    this.notify();
+    return { ok: true };
+  }
+
+  logout(role) {
+    if (role === 'patient') this.state.sessions.patient = null;
+    if (role === 'reception') this.state.sessions.reception = null;
+    if (role === 'doctor') this.state.sessions.doctor = null;
+    this.notify();
+  }
+
+  // ---------- Patient registration & tokens ----------
+  registerWalkIn({ name, phone, isEmergency = false, notes = '' }) {
+    const cleanPhone = String(phone).replace(/\D/g, '').slice(-10);
+    const token = this.state.nextToken++;
+    const patient = {
+      id: uid('pt-'),
+      day: this.state.day,
+      name: name.trim(),
+      phone: cleanPhone,
+      token,
+      status: 'waiting',
+      isEmergency: !!isEmergency,
+      notes,
+      createdAt: new Date().toISOString(),
+      consultStartedAt: null,
+      consultEndedAt: null,
+      estimatedStart: null, // filled by engine
+      actualStart: null,
+      doctorId: this.state.doctor.id,
+    };
+    this.state.patients.push(patient);
+
+    if (isEmergency) {
+      // Insert near front (after current consulting if any)
+      const consultingIdx = this.state.queue.findIndex(id => {
+        const p = this.getPatient(id);
+        return p && p.status === 'consulting';
+      });
+      if (consultingIdx >= 0) {
+        this.state.queue.splice(consultingIdx + 1, 0, patient.id);
+      } else {
+        this.state.queue.unshift(patient.id);
+      }
+    } else {
+      this.state.queue.push(patient.id);
+    }
+
+    this.notify();
+    bus.emit('patient:registered', patient);
+    return patient;
+  }
+
+  bookAppointment({ name, phone, preferredTime }) {
+    // For V1 same as walk-in but tagged
+    const p = this.registerWalkIn({ name, phone, isEmergency: false, notes: preferredTime ? `Preferred: ${preferredTime}` : '' });
+    p.isAppointment = true;
+    this.notify();
+    return p;
+  }
+
+  getPatient(id) {
+    return this.state.patients.find(p => p.id === id) || null;
+  }
+
+  getPatientByPhone(phone) {
+    const clean = String(phone).replace(/\D/g, '').slice(-10);
+    // Prefer today's active
+    return this.state.patients
+      .filter(p => p.phone === clean)
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0] || null;
+  }
+
+  getPatientByToken(token) {
+    return this.state.patients.find(p => p.token === Number(token) && p.day === this.state.day) || null;
+  }
+
+  // ---------- Queue operations (Reception & Doctor) ----------
+  setPatientStatus(patientId, status) {
+    const p = this.getPatient(patientId);
+    if (!p) return false;
+    const prev = p.status;
+    p.status = status;
+
+    if (status === 'consulting') {
+      p.consultStartedAt = new Date().toISOString();
+      p.actualStart = p.consultStartedAt;
+      this.state.doctor.status = 'consulting';
+      this.state.doctor.currentPatientId = patientId;
+      this.state.doctor.consultStartedAt = p.consultStartedAt;
+    }
+
+    if (status === 'completed') {
+      p.consultEndedAt = new Date().toISOString();
+      this.state.doctor.totalSeenToday += 1;
+      // Update running average (simple EMA)
+      if (p.consultStartedAt) {
+        const duration = Math.max(3, Math.round((new Date(p.consultEndedAt) - new Date(p.consultStartedAt)) / 60000));
+        const alpha = 0.3;
+        this.state.doctor.avgConsultMin = Math.round(
+          alpha * duration + (1 - alpha) * this.state.doctor.avgConsultMin
+        );
+      }
+      this.state.doctor.currentPatientId = null;
+      this.state.doctor.consultStartedAt = null;
+      if (this.state.doctor.status === 'consulting') {
+        this.state.doctor.status = 'available';
+      }
+      // Remove from active queue
+      this.state.queue = this.state.queue.filter(id => id !== patientId);
+    }
+
+    if (status === 'no_show' || status === 'cancelled') {
+      this.state.queue = this.state.queue.filter(id => id !== patientId);
+      if (this.state.doctor.currentPatientId === patientId) {
+        this.state.doctor.currentPatientId = null;
+        this.state.doctor.consultStartedAt = null;
+        this.state.doctor.status = 'available';
+      }
+    }
+
+    this.notify();
+    bus.emit('patient:status', { patient: p, prev });
+    return true;
+  }
+
+  // ---------- Doctor controls ----------
+  doctorStartConsultation() {
+    // Start the first waiting patient
+    const nextId = this.state.queue.find(id => {
+      const p = this.getPatient(id);
+      return p && p.status === 'waiting';
+    });
+    if (!nextId) return { ok: false, error: 'No patients waiting' };
+    this.setPatientStatus(nextId, 'consulting');
+    return { ok: true, patient: this.getPatient(nextId) };
+  }
+
+  doctorNextPatient() {
+    // Complete current if consulting, then start next
+    if (this.state.doctor.currentPatientId) {
+      this.setPatientStatus(this.state.doctor.currentPatientId, 'completed');
+    }
+    return this.doctorStartConsultation();
+  }
+
+  doctorPause(reason = 'paused') {
+    this.state.doctor.status = reason === 'break' ? 'break' : reason === 'emergency' ? 'emergency_pause' : 'paused';
+    this.state.doctor.pauseReason = reason;
+    this.notify();
+    bus.emit('doctor:pause', { reason });
+  }
+
+  doctorResume() {
+    this.state.doctor.status = this.state.doctor.currentPatientId ? 'consulting' : 'available';
+    this.state.doctor.pauseReason = null;
+    this.notify();
+    bus.emit('doctor:resume');
+  }
+
+  doctorFinishDay() {
+    this.state.doctor.status = 'finished';
+    // Mark remaining waiting as cancelled for the day
+    this.state.queue.forEach(id => {
+      const p = this.getPatient(id);
+      if (p && p.status === 'waiting') p.status = 'cancelled';
+    });
+    this.state.queue = [];
+    this.state.doctor.currentPatientId = null;
+    this.notify();
+  }
+
+  // ---------- Derived helpers ----------
+  getActiveQueue() {
+    return this.state.queue
+      .map(id => this.getPatient(id))
+      .filter(Boolean)
+      .filter(p => p.status === 'waiting' || p.status === 'consulting');
+  }
+
+  getWaitingPatients() {
+    return this.getActiveQueue().filter(p => p.status === 'waiting');
+  }
+
+  getCurrentPatient() {
+    if (!this.state.doctor.currentPatientId) return null;
+    return this.getPatient(this.state.doctor.currentPatientId);
+  }
+
+  searchPatients(query) {
+    const q = String(query).toLowerCase().trim();
+    if (!q) return this.state.patients.filter(p => p.day === this.state.day);
+    return this.state.patients.filter(p =>
+      p.day === this.state.day &&
+      (p.name.toLowerCase().includes(q) ||
+        p.phone.includes(q) ||
+        String(p.token).includes(q))
+    );
+  }
+
+  getHistoryForPhone(phone) {
+    const clean = String(phone).replace(/\D/g, '').slice(-10);
+    return this.state.patients
+      .filter(p => p.phone === clean)
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  }
+
+  // Seed demo data if empty
+  seedDemoIfEmpty() {
+    if (this.state.patients.some(p => p.day === this.state.day)) return;
+    const names = [
+      { name: 'Rahul Mehta', phone: '9876543210' },
+      { name: 'Priya Nair', phone: '9876543211' },
+      { name: 'Amit Patel', phone: '9876543212' },
+      { name: 'Sneha Reddy', phone: '9876543213' },
+      { name: 'Vikram Singh', phone: '9876543214' },
+      { name: 'Anjali Gupta', phone: '9876543215' },
+      { name: 'Karthik Iyer', phone: '9876543216' },
+      { name: 'Meera Joshi', phone: '9876543217' },
+    ];
+    names.forEach((n, i) => {
+      this.registerWalkIn({
+        name: n.name,
+        phone: n.phone,
+        isEmergency: i === 2, // one emergency for demo
+      });
+    });
+  }
+
+  resetAll() {
+    this.state = createInitialState();
+    this._save();
+    this.notify();
+  }
+}
+
+const store = new Store();
+
+
+/**
+ * Smart Hospital Queue — Live Queue Engine & Smart ETA
+ *
+ * Calculates:
+ * - Current token
+ * - Patients ahead
+ * - Estimated consultation start
+ * - Recommended arrival time
+ * - Dynamic updates on status / pause / emergency
+ *
+ * Architecture note: Pure functions over state → easy to move to server later
+ * or replace with ML model for prediction.
+ */
+
+
+
+const ENGINE_TICK_MS = 15000; // recompute every 15s
+
+class QueueEngine {
+  constructor() {
+    this._timer = null;
+    this._lastSnapshot = null;
+  }
+
+  start() {
+    this.recompute();
+    this._timer = setInterval(() => this.recompute(), ENGINE_TICK_MS);
+    // React to store changes immediately
+    store.subscribe(() => this.recompute());
+  }
+
+  stop() {
+    if (this._timer) clearInterval(this._timer);
+  }
+
+  /**
+   * Core ETA calculation
+   * Returns enriched view of the queue for UI
+   */
+  recompute() {
+    const state = store.getState();
+    const doctor = state.doctor;
+    const avg = Math.max(4, doctor.avgConsultMin || 10);
+    const active = store.getActiveQueue();
+
+    // Determine if doctor is effectively delayed / paused
+    const isPaused = ['paused', 'break', 'emergency_pause'].includes(doctor.status);
+    const isFinished = doctor.status === 'finished';
+
+    let cumulativeMin = 0;
+    const now = new Date();
+
+    // If currently consulting, estimate remaining time for current patient
+    let remainingCurrent = 0;
+    if (doctor.status === 'consulting' && doctor.consultStartedAt) {
+      const elapsed = Math.round((now - new Date(doctor.consultStartedAt)) / 60000);
+      remainingCurrent = Math.max(1, avg - elapsed);
+      // Cap so we don't go negative forever
+      remainingCurrent = Math.min(remainingCurrent, avg);
+    }
+
+    const enriched = active.map((patient, index) => {
+      let patientsAhead = 0;
+      let estimatedStart = null;
+      let estimatedEnd = null;
+      let recommendedArrival = null;
+      let waitMinutes = 0;
+
+      if (isFinished) {
+        return {
+          ...patient,
+          patientsAhead: 0,
+          estimatedStart: null,
+          estimatedEnd: null,
+          recommendedArrival: null,
+          waitMinutes: 0,
+          isCurrent: false,
+        };
+      }
+
+      if (patient.status === 'consulting') {
+        patientsAhead = 0;
+        estimatedStart = doctor.consultStartedAt ? new Date(doctor.consultStartedAt) : now;
+        estimatedEnd = addMinutes(now, remainingCurrent);
+        waitMinutes = 0;
+      } else {
+        // Count how many waiting/consulting before this patient
+        patientsAhead = active
+          .slice(0, index)
+          .filter(p => p.status === 'waiting' || p.status === 'consulting').length;
+
+        // Time until this patient starts
+        let minutesUntil = remainingCurrent;
+        // Add full avg for each waiting patient before us (excluding current)
+        const waitingBefore = active
+          .slice(0, index)
+          .filter(p => p.status === 'waiting').length;
+        minutesUntil += waitingBefore * avg;
+
+        // If paused, add a soft buffer (don't over-promise)
+        if (isPaused) {
+          minutesUntil += 8; // buffer while paused
+        }
+
+        waitMinutes = Math.max(0, Math.round(minutesUntil));
+        estimatedStart = addMinutes(now, waitMinutes);
+        estimatedEnd = addMinutes(estimatedStart, avg);
+        recommendedArrival = addMinutes(estimatedStart, -state.settings.recommendArriveEarlyMin);
+      }
+
+      // Persist estimate on patient for history
+      if (patient.estimatedStart !== (estimatedStart ? estimatedStart.toISOString() : null)) {
+        patient.estimatedStart = estimatedStart ? estimatedStart.toISOString() : null;
+      }
+
+      return {
+        ...patient,
+        patientsAhead,
+        estimatedStart,
+        estimatedEnd,
+        recommendedArrival,
+        waitMinutes,
+        isCurrent: patient.status === 'consulting',
+      };
+    });
+
+    // Current token (the one being consulted or next)
+    const current = enriched.find(p => p.status === 'consulting') || enriched.find(p => p.status === 'waiting');
+    const currentToken = current ? current.token : null;
+    const upcoming = enriched.filter(p => p.status === 'waiting').slice(0, 5);
+
+    this._lastSnapshot = {
+      currentToken,
+      doctorStatus: doctor.status,
+      isPaused,
+      isFinished,
+      avgConsultMin: avg,
+      totalSeen: doctor.totalSeenToday,
+      totalWaiting: enriched.filter(p => p.status === 'waiting').length,
+      totalInQueue: enriched.length,
+      queue: enriched,
+      upcoming,
+      updatedAt: now.toISOString(),
+    };
+
+    bus.emit('queue:updated', this._lastSnapshot);
+    return this._lastSnapshot;
+  }
+
+  getSnapshot() {
+    return this._lastSnapshot || this.recompute();
+  }
+
+  /**
+   * Get ETA info for a specific patient (by id or token)
+   */
+  getEtaForPatient(patientIdOrToken) {
+    const snap = this.getSnapshot();
+    const item = snap.queue.find(
+      p => p.id === patientIdOrToken || p.token === Number(patientIdOrToken)
+    );
+    if (!item) return null;
+
+    return {
+      token: item.token,
+      status: item.status,
+      patientsAhead: item.patientsAhead,
+      waitMinutes: item.waitMinutes,
+      estimatedStart: item.estimatedStart,
+      estimatedEnd: item.estimatedEnd,
+      recommendedArrival: item.recommendedArrival,
+      estimatedStartLabel: item.estimatedStart ? formatTime(item.estimatedStart) : '—',
+      recommendedArrivalLabel: item.recommendedArrival ? formatTime(item.recommendedArrival) : '—',
+      isCurrent: item.isCurrent,
+      doctorStatus: snap.doctorStatus,
+      avgConsultMin: snap.avgConsultMin,
+    };
+  }
+
+  /**
+   * Human readable delay message
+   */
+  getDelayMessage() {
+    const snap = this.getSnapshot();
+    if (snap.isFinished) return 'Clinic closed for today';
+    if (snap.doctorStatus === 'break') return 'Doctor is on a short break';
+    if (snap.doctorStatus === 'emergency_pause') return 'Emergency — queue temporarily paused';
+    if (snap.doctorStatus === 'paused') return 'Doctor has paused the queue';
+    if (snap.doctorStatus === 'consulting') return 'Consultation in progress';
+    return 'Doctor is available';
+  }
+}
+
+const queueEngine = new QueueEngine();
+
+
+/**
+ * Smart Hospital Queue — Notification Service
+ * Handles in-app toasts + browser notifications + scheduled alerts
+ * based on ETA thresholds (30 / 15 / 10 min).
+ */
+
+
+
+
+const SENT_KEY = 'shq_notified_';
+
+class NotificationService {
+  constructor() {
+    this._sent = new Set(); // session-level + persisted keys
+    this._loadSent();
+    this._checkTimer = null;
+  }
+
+  _loadSent() {
+    try {
+      const raw = sessionStorage.getItem(SENT_KEY);
+      if (raw) JSON.parse(raw).forEach(k => this._sent.add(k));
+    } catch {}
+  }
+
+  _persistSent() {
+    try {
+      sessionStorage.setItem(SENT_KEY, JSON.stringify([...this._sent]));
+    } catch {}
+  }
+
+  _mark(key) {
+    this._sent.add(key);
+    this._persistSent();
+  }
+
+  _has(key) {
+    return this._sent.has(key);
+  }
+
+  start() {
+    // Listen to queue updates and patient events
+    bus.on('queue:updated', () => this._evaluateThresholds());
+    bus.on('patient:registered', (p) => {
+      this.toast(`Token #${p.token} issued`, `${p.name} added to queue`, 'success');
+      this._notifyPatient(p, 'confirmed', `Appointment confirmed. Your token is #${p.token}`);
+    });
+    bus.on('patient:status', ({ patient, prev }) => {
+      if (patient.status === 'consulting' && prev !== 'consulting') {
+        this.toast(`Now consulting`, `Token #${patient.token} — ${patient.name}`, 'info');
+        this._notifyPatient(patient, 'started', `Doctor has started consultation for token #${patient.token}`);
+      }
+      if (patient.status === 'completed') {
+        this.toast(`Completed`, `Token #${patient.token} finished`, 'success');
+        this._notifyPatient(patient, 'completed', `Consultation completed. Thank you!`);
+      }
+    });
+    bus.on('doctor:pause', ({ reason }) => {
+      const msg = reason === 'break' ? 'Doctor is on a break' :
+        reason === 'emergency' ? 'Emergency pause — please wait' : 'Queue paused by doctor';
+      this.toast('Queue Update', msg, 'warning');
+    });
+    bus.on('doctor:resume', () => {
+      this.toast('Queue Resumed', 'Doctor is available again', 'success');
+    });
+
+    // Periodic threshold check (in case ETA drifts)
+    this._checkTimer = setInterval(() => this._evaluateThresholds(), 20000);
+  }
+
+  stop() {
+    if (this._checkTimer) clearInterval(this._checkTimer);
+  }
+
+  /** In-app toast */
+  toast(title, message = '', type = 'info', duration = 4200) {
+    const container = document.getElementById('toast-container');
+    if (!container) return;
+
+    const colors = {
+      info: 'bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900',
+      success: 'bg-teal-600 text-white',
+      warning: 'bg-amber-500 text-white',
+      error: 'bg-rose-600 text-white',
+    };
+
+    const el = document.createElement('div');
+    el.className = `pointer-events-auto rounded-2xl shadow-lg px-4 py-3 ${colors[type] || colors.info} animate-slide-up flex gap-3 items-start`;
+    el.innerHTML = `
+      <div class="flex-1 min-w-0">
+        <p class="font-semibold text-sm leading-tight">${escapeHtml(title)}</p>
+        ${message ? `<p class="text-xs opacity-90 mt-0.5 leading-snug">${escapeHtml(message)}</p>` : ''}
+      </div>
+      <button class="opacity-70 hover:opacity-100 transition shrink-0" aria-label="Dismiss">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    `;
+    el.querySelector('button').onclick = () => el.remove();
+    container.appendChild(el);
+    setTimeout(() => {
+      el.style.opacity = '0';
+      el.style.transform = 'translateX(12px)';
+      el.style.transition = 'all 0.3s ease';
+      setTimeout(() => el.remove(), 300);
+    }, duration);
+  }
+
+  _notifyPatient(patient, kind, body) {
+    // Only if this browser is the patient's session
+    const session = store.getState().sessions.patient;
+    if (!session || session.phone !== patient.phone) return;
+
+    const title = kind === 'confirmed' ? 'Appointment Confirmed' :
+      kind === 'started' ? 'Consultation Started' :
+      kind === 'completed' ? 'Consultation Completed' :
+      kind === '30min' ? 'Your turn in ~30 min' :
+      kind === '15min' ? 'Your turn in ~15 min' :
+      kind === '10min' ? 'Your turn in ~10 min' :
+      kind === 'arrive' ? 'Please Arrive Now' :
+      kind === 'next' ? 'You are Next!' : 'Queue Update';
+
+    showBrowserNotification(title, body, `shq-${patient.id}-${kind}`);
+    vibrate();
+  }
+
+  _evaluateThresholds() {
+    const session = store.getState().sessions.patient;
+    if (!session) return;
+
+    const patient = store.getPatientByPhone(session.phone);
+    if (!patient || patient.status !== 'waiting') return;
+
+    const eta = queueEngine.getEtaForPatient(patient.id);
+    if (!eta || eta.waitMinutes == null) return;
+
+    const thresholds = [
+      { min: 30, kind: '30min', body: `Approximately 30 minutes remaining. Estimated time ${eta.estimatedStartLabel}` },
+      { min: 15, kind: '15min', body: `About 15 minutes left. Please prepare to leave for the hospital.` },
+      { min: 10, kind: '10min', body: `Your turn is in ~10 minutes. Recommended arrival: ${eta.recommendedArrivalLabel}` },
+      { min: 5, kind: 'arrive', body: `Please proceed to the hospital now. Your estimated time is ${eta.estimatedStartLabel}` },
+      { min: 1, kind: 'next', body: `You are next! Please be ready near the consultation room.` },
+    ];
+
+    for (const t of thresholds) {
+      const key = `${patient.id}-${t.kind}`;
+      if (eta.waitMinutes <= t.min && !this._has(key)) {
+        this._mark(key);
+        this.toast(
+          t.kind === 'arrive' || t.kind === 'next' ? 'Time to arrive' : `~${t.min} min remaining`,
+          t.body,
+          t.kind === 'arrive' || t.kind === 'next' ? 'warning' : 'info'
+        );
+        this._notifyPatient(patient, t.kind, t.body);
+      }
+    }
+  }
+}
+
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+const notifications = new NotificationService();
+
+
+/**
+ * Smart Hospital Queue — UI Renderer
+ * Pure rendering helpers + shared components
+ */
+
+
+function icon(name, size = 20, cls = '') {
+  return `<i data-lucide="${name}" class="${cls}" width="${size}" height="${size}"></i>`;
+}
+
+function statusBadge(status) {
+  const map = {
+    waiting: { label: 'Waiting', cls: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200' },
+    consulting: { label: 'In Consultation', cls: 'bg-teal-100 text-teal-800 dark:bg-teal-900/40 dark:text-teal-200' },
+    completed: { label: 'Completed', cls: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200' },
+    no_show: { label: 'No Show', cls: 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300' },
+    cancelled: { label: 'Cancelled', cls: 'bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-200' },
+  };
+  const s = map[status] || map.waiting;
+  return `<span class="badge ${s.cls}">${s.label}</span>`;
+}
+
+function doctorStatusBadge(status) {
+  const map = {
+    available: { label: 'Available', cls: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200', dot: 'bg-emerald-500' },
+    consulting: { label: 'Consulting', cls: 'bg-teal-100 text-teal-800 dark:bg-teal-900/40 dark:text-teal-200', dot: 'bg-teal-500' },
+    paused: { label: 'Paused', cls: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200', dot: 'bg-amber-500' },
+    break: { label: 'On Break', cls: 'bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-200', dot: 'bg-orange-500' },
+    emergency_pause: { label: 'Emergency', cls: 'bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-200', dot: 'bg-rose-500' },
+    finished: { label: 'Finished', cls: 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300', dot: 'bg-slate-400' },
+  };
+  const s = map[status] || map.available;
+  return `
+    <span class="badge ${s.cls}">
+      <span class="w-1.5 h-1.5 rounded-full ${s.dot} live-dot"></span>
+      ${s.label}
+    </span>`;
+}
+
+function headerBar({ title, subtitle, rightHtml = '', showBack = false, backAction = 'home' }) {
+  return `
+    <header class="sticky top-0 z-30 glass border-b border-slate-200/70 dark:border-slate-800/70">
+      <div class="max-w-6xl mx-auto px-4 sm:px-6 h-14 flex items-center gap-3">
+        ${showBack ? `
+          <button data-action="${backAction}" class="p-2 -ml-2 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+            ${icon('arrow-left', 20)}
+          </button>` : ''}
+        <div class="flex-1 min-w-0">
+          <h1 class="font-display font-bold text-base sm:text-lg truncate leading-tight">${title}</h1>
+          ${subtitle ? `<p class="text-xs text-slate-500 dark:text-slate-400 truncate">${subtitle}</p>` : ''}
+        </div>
+        <div class="flex items-center gap-2 shrink-0">
+          ${rightHtml}
+        </div>
+      </div>
+    </header>`;
+}
+
+function themeToggleBtn() {
+  return `
+    <button data-action="toggle-theme" class="p-2 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition" title="Toggle theme">
+      <span class="dark:hidden">${icon('moon', 18)}</span>
+      <span class="hidden dark:inline">${icon('sun', 18)}</span>
+    </button>`;
+}
+
+function emptyState(iconName, title, desc) {
+  return `
+    <div class="flex flex-col items-center justify-center py-16 px-6 text-center">
+      <div class="w-16 h-16 rounded-2xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center mb-4 text-slate-400">
+        ${icon(iconName, 28)}
+      </div>
+      <h3 class="font-display font-semibold text-lg">${title}</h3>
+      <p class="text-sm text-slate-500 dark:text-slate-400 mt-1 max-w-xs">${desc}</p>
+    </div>`;
+}
+
+function metricCard(label, value, sub = '', accent = 'teal') {
+  const accents = {
+    teal: 'from-teal-500/10 to-teal-500/5 border-teal-500/20',
+    amber: 'from-amber-500/10 to-amber-500/5 border-amber-500/20',
+    rose: 'from-rose-500/10 to-rose-500/5 border-rose-500/20',
+    slate: 'from-slate-500/10 to-slate-500/5 border-slate-500/20',
+  };
+  return `
+    <div class="rounded-2xl border bg-gradient-to-br ${accents[accent] || accents.teal} p-4 shadow-soft">
+      <p class="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">${label}</p>
+      <p class="mt-1 font-display text-2xl sm:text-3xl font-bold token-display tracking-tight">${value}</p>
+      ${sub ? `<p class="mt-1 text-xs text-slate-500 dark:text-slate-400">${sub}</p>` : ''}
+    </div>`;
+}
+
+function patientRow(p, extra = '') {
+  return `
+    <div class="flex items-center gap-3 p-3 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800/50 transition" data-patient-id="${p.id}">
+      <div class="w-11 h-11 rounded-xl bg-brand-100 dark:bg-brand-900/40 text-brand-700 dark:text-brand-300 flex items-center justify-center font-display font-bold text-sm token-display shrink-0">
+        ${p.token}
+      </div>
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-2">
+          <p class="font-semibold text-sm truncate">${p.name}</p>
+          ${p.isEmergency ? '<span class="text-[10px] font-bold uppercase tracking-wide text-rose-600 bg-rose-100 dark:bg-rose-900/40 px-1.5 py-0.5 rounded">Emergency</span>' : ''}
+        </div>
+        <p class="text-xs text-slate-500 dark:text-slate-400 truncate">${phoneMask(p.phone)} · ${formatTime(p.createdAt)}</p>
+      </div>
+      <div class="shrink-0 flex flex-col items-end gap-1">
+        ${statusBadge(p.status)}
+        ${extra}
+      </div>
+    </div>`;
+}
+
+function refreshIcons() {
+  if (window.lucide) window.lucide.createIcons();
+}
+
+
+/**
+ * Login / Role Selection View
+ */
+
+
+
+
+
+function renderLogin(root) {
+  root.innerHTML = `
+    <div class="min-h-screen flex flex-col">
+      <!-- Top bar -->
+      <div class="absolute top-4 right-4 z-10">
+        ${themeToggleBtn()}
+      </div>
+
+      <!-- Hero -->
+      <div class="flex-1 flex flex-col items-center justify-center px-5 py-10">
+        <div class="w-full max-w-md">
+          <div class="text-center mb-8">
+            <div class="inline-flex w-16 h-16 rounded-2xl bg-gradient-to-br from-brand-500 to-teal-600 text-white items-center justify-center shadow-glow mb-5">
+              ${icon('clock', 32)}
+            </div>
+            <h1 class="font-display text-2xl sm:text-3xl font-extrabold tracking-tight">Smart Hospital Queue</h1>
+            <p class="mt-2 text-slate-500 dark:text-slate-400 text-sm leading-relaxed">
+              Live digital tokens · Accurate ETA · Zero long waits
+            </p>
+          </div>
+
+          <!-- Role cards -->
+          <div class="space-y-3" id="role-select">
+            <button data-role="patient" class="role-card w-full group flex items-center gap-4 p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card hover:border-brand-400 dark:hover:border-brand-600 transition card-interactive text-left">
+              <div class="w-12 h-12 rounded-xl bg-brand-50 dark:bg-brand-950 text-brand-600 dark:text-brand-400 flex items-center justify-center group-hover:scale-105 transition">
+                ${icon('smartphone', 22)}
+              </div>
+              <div class="flex-1">
+                <p class="font-semibold">Patient</p>
+                <p class="text-xs text-slate-500 dark:text-slate-400">View token, live queue & ETA</p>
+              </div>
+              ${icon('chevron-right', 18, 'text-slate-300 group-hover:text-brand-500 transition')}
+            </button>
+
+            <button data-role="reception" class="role-card w-full group flex items-center gap-4 p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card hover:border-brand-400 dark:hover:border-brand-600 transition card-interactive text-left">
+              <div class="w-12 h-12 rounded-xl bg-indigo-50 dark:bg-indigo-950 text-indigo-600 dark:text-indigo-400 flex items-center justify-center group-hover:scale-105 transition">
+                ${icon('clipboard-list', 22)}
+              </div>
+              <div class="flex-1">
+                <p class="font-semibold">Reception</p>
+                <p class="text-xs text-slate-500 dark:text-slate-400">Register patients & manage queue</p>
+              </div>
+              ${icon('chevron-right', 18, 'text-slate-300 group-hover:text-brand-500 transition')}
+            </button>
+
+            <button data-role="doctor" class="role-card w-full group flex items-center gap-4 p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card hover:border-brand-400 dark:hover:border-brand-600 transition card-interactive text-left">
+              <div class="w-12 h-12 rounded-xl bg-violet-50 dark:bg-violet-950 text-violet-600 dark:text-violet-400 flex items-center justify-center group-hover:scale-105 transition">
+                ${icon('stethoscope', 22)}
+              </div>
+              <div class="flex-1">
+                <p class="font-semibold">Doctor</p>
+                <p class="text-xs text-slate-500 dark:text-slate-400">Control consultation & queue flow</p>
+              </div>
+              ${icon('chevron-right', 18, 'text-slate-300 group-hover:text-brand-500 transition')}
+            </button>
+          </div>
+
+          <!-- Patient OTP form (hidden initially) -->
+          <div id="patient-login" class="hidden mt-6 animate-slide-up">
+            <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card p-5">
+              <button data-action="back-roles" class="text-sm text-slate-500 hover:text-brand-600 flex items-center gap-1 mb-4">
+                ${icon('arrow-left', 16)} Back
+              </button>
+              <h2 class="font-display font-bold text-lg">Patient Login</h2>
+              <p class="text-xs text-slate-500 mt-1 mb-5">Enter mobile number. OTP is simulated for demo.</p>
+
+              <label class="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5">Mobile Number</label>
+              <div class="flex gap-2 mb-4">
+                <span class="inline-flex items-center px-3 rounded-xl bg-slate-100 dark:bg-slate-800 text-sm font-medium text-slate-600 dark:text-slate-300">+91</span>
+                <input id="phone-input" type="tel" maxlength="10" inputmode="numeric" placeholder="98765 43210"
+                  class="flex-1 px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm focus:ring-2 focus:ring-brand-500 focus:border-transparent outline-none transition" />
+              </div>
+
+              <label class="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5">OTP (any 6 digits)</label>
+              <input id="otp-input" type="text" maxlength="6" inputmode="numeric" placeholder="••••••"
+                class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm tracking-[0.4em] text-center font-semibold focus:ring-2 focus:ring-brand-500 focus:border-transparent outline-none transition mb-5" />
+
+              <button id="btn-patient-login" class="w-full py-3 rounded-xl bg-brand-600 hover:bg-brand-700 text-white font-semibold text-sm shadow-soft transition active:scale-[0.98]">
+                Continue
+              </button>
+              <p id="login-error" class="text-xs text-rose-500 mt-3 text-center hidden"></p>
+            </div>
+          </div>
+
+          <p class="text-center text-[11px] text-slate-400 mt-8">
+            Demo mode · Data stays in this browser · Version 1.0
+          </p>
+        </div>
+      </div>
+    </div>
+  `;
+
+  refreshIcons();
+
+  // Role selection
+  root.querySelectorAll('[data-role]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const role = btn.dataset.role;
+      if (role === 'patient') {
+        root.querySelector('#role-select').classList.add('hidden');
+        root.querySelector('#patient-login').classList.remove('hidden');
+        root.querySelector('#phone-input')?.focus();
+      } else if (role === 'reception') {
+        store.loginReception();
+        notifications.toast('Welcome', 'Reception desk ready', 'success');
+        window.location.hash = '#/reception';
+      } else if (role === 'doctor') {
+        store.loginDoctor();
+        notifications.toast('Welcome Doctor', 'Queue control panel active', 'success');
+        window.location.hash = '#/doctor';
+      }
+    });
+  });
+
+  root.querySelector('[data-action="back-roles"]')?.addEventListener('click', () => {
+    root.querySelector('#patient-login').classList.add('hidden');
+    root.querySelector('#role-select').classList.remove('hidden');
+  });
+
+  root.querySelector('#btn-patient-login')?.addEventListener('click', () => {
+    const phone = root.querySelector('#phone-input').value;
+    const otp = root.querySelector('#otp-input').value;
+    const err = root.querySelector('#login-error');
+    const res = store.loginPatient(phone, otp);
+    if (!res.ok) {
+      err.textContent = res.error;
+      err.classList.remove('hidden');
+      return;
+    }
+    err.classList.add('hidden');
+    requestNotificationPermission();
+    notifications.toast('Logged in', `+91 ${res.phone}`, 'success');
+    window.location.hash = '#/patient';
+  });
+
+  // Enter key support
+  root.querySelector('#otp-input')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') root.querySelector('#btn-patient-login')?.click();
+  });
+}
+
+
+/**
+ * Patient App View
+ * Digital token, live queue, ETA, countdown, history
+ */
+
+
+
+
+
+let patient_patient_unsub = null;
+let patient_patient_countdownTimer = null;
+
+function renderPatient(root) {
+  const session = store.getState().sessions.patient;
+  if (!session) {
+    window.location.hash = '#/';
+    return;
+  }
+
+  const paint = () => {
+    const state = store.getState();
+    const patient = store.getPatientByPhone(session.phone);
+    const snap = queueEngine.getSnapshot();
+    const eta = patient ? queueEngine.getEtaForPatient(patient.id) : null;
+    const history = store.getHistoryForPhone(session.phone);
+
+    const hasActive = patient && (patient.status === 'waiting' || patient.status === 'consulting');
+
+    root.innerHTML = `
+      ${headerBar({
+        title: 'My Queue',
+        subtitle: phoneMask(session.phone),
+        rightHtml: `
+          ${themeToggleBtn()}
+          <button data-action="logout" class="p-2 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition" title="Logout">
+            ${icon('log-out', 18)}
+          </button>
+        `,
+      })}
+
+      <main class="flex-1 max-w-lg mx-auto w-full px-4 py-5 space-y-5 view-enter">
+        ${!patient ? `
+          <div class="rounded-2xl border border-dashed border-slate-300 dark:border-slate-700 p-8 text-center">
+            <div class="w-14 h-14 mx-auto rounded-2xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-400 mb-4">
+              ${icon('ticket', 28)}
+            </div>
+            <h2 class="font-display font-bold text-lg">No active token</h2>
+            <p class="text-sm text-slate-500 dark:text-slate-400 mt-2 leading-relaxed">
+              Visit the reception desk to register and receive your digital token. Once issued, it will appear here automatically.
+            </p>
+            <p class="text-xs text-slate-400 mt-4">Demo tip: Ask reception to register phone <strong>${session.phone}</strong></p>
+          </div>
+        ` : `
+          <!-- Token Hero Card -->
+          <div class="relative overflow-hidden rounded-3xl bg-gradient-to-br from-brand-600 via-teal-600 to-teal-800 text-white p-6 shadow-glow">
+            <div class="absolute -right-8 -top-8 w-40 h-40 rounded-full bg-white/10"></div>
+            <div class="absolute -left-6 -bottom-10 w-32 h-32 rounded-full bg-white/5"></div>
+            <div class="relative">
+              <div class="flex items-center justify-between mb-4">
+                <span class="text-xs font-medium uppercase tracking-widest text-brand-100">Digital Token</span>
+                ${patient.isEmergency ? '<span class="text-[10px] font-bold uppercase bg-rose-500/90 px-2 py-0.5 rounded-full">Emergency</span>' : ''}
+              </div>
+              <div class="flex items-end gap-3">
+                <span class="font-display text-6xl sm:text-7xl font-extrabold token-display leading-none tracking-tighter">#${patient.token}</span>
+                <div class="pb-2">${statusBadge(patient.status)}</div>
+              </div>
+              <p class="mt-3 text-brand-50 font-medium">${patient.name}</p>
+              <p class="text-xs text-brand-100/80 mt-0.5">${formatDateTime(patient.createdAt)}</p>
+            </div>
+          </div>
+
+          ${hasActive ? `
+            <!-- Live Status -->
+            <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card p-5">
+              <div class="flex items-center justify-between mb-4">
+                <h3 class="font-display font-semibold text-sm flex items-center gap-2">
+                  <span class="w-2 h-2 rounded-full bg-emerald-500 live-dot"></span>
+                  Live Queue Status
+                </h3>
+                ${doctorStatusBadge(snap.doctorStatus)}
+              </div>
+
+              <div class="grid grid-cols-2 gap-3 mb-5">
+                <div class="rounded-xl bg-slate-50 dark:bg-slate-800/60 p-3 text-center">
+                  <p class="text-[11px] uppercase tracking-wider text-slate-500 mb-1">Patients Ahead</p>
+                  <p class="font-display text-3xl font-bold token-display">${eta?.patientsAhead ?? '—'}</p>
+                </div>
+                <div class="rounded-xl bg-slate-50 dark:bg-slate-800/60 p-3 text-center">
+                  <p class="text-[11px] uppercase tracking-wider text-slate-500 mb-1">Current Token</p>
+                  <p class="font-display text-3xl font-bold token-display">${snap.currentToken ?? '—'}</p>
+                </div>
+              </div>
+
+              ${eta && patient.status === 'waiting' ? `
+                <div class="space-y-3">
+                  <div class="flex justify-between items-baseline">
+                    <span class="text-sm text-slate-500">Estimated consultation</span>
+                    <span class="font-display font-bold text-lg text-brand-600 dark:text-brand-400">${eta.estimatedStartLabel}</span>
+                  </div>
+                  <div class="flex justify-between items-baseline">
+                    <span class="text-sm text-slate-500">Recommended arrival</span>
+                    <span class="font-semibold text-brand-700 dark:text-brand-300">${eta.recommendedArrivalLabel}</span>
+                  </div>
+                  <div class="pt-2">
+                    <div class="flex justify-between text-xs text-slate-500 mb-1.5">
+                      <span>Waiting time</span>
+                      <span id="countdown-label" class="font-medium text-slate-700 dark:text-slate-200">~${eta.waitMinutes} min</span>
+                    </div>
+                    <div class="h-2 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
+                      <div id="wait-progress" class="h-full rounded-full bg-gradient-to-r from-brand-500 to-teal-400 transition-all duration-700"
+                        style="width: ${Math.max(5, 100 - Math.min(100, (eta.waitMinutes / 60) * 100))}%"></div>
+                    </div>
+                  </div>
+                </div>
+              ` : patient.status === 'consulting' ? `
+                <div class="text-center py-2">
+                  <p class="text-brand-600 dark:text-brand-400 font-semibold flex items-center justify-center gap-2">
+                    ${icon('stethoscope', 18)} You are with the doctor now
+                  </p>
+                </div>
+              ` : ''}
+
+              ${snap.isPaused ? `
+                <div class="mt-4 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 px-3 py-2.5 text-sm text-amber-800 dark:text-amber-200 flex items-start gap-2">
+                  ${icon('pause-circle', 18, 'shrink-0 mt-0.5')}
+                  <span>${queueEngine.getDelayMessage()}</span>
+                </div>
+              ` : ''}
+            </div>
+          ` : `
+            <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card p-5 text-center">
+              <p class="text-sm text-slate-500">This consultation has ended.</p>
+              ${statusBadge(patient.status)}
+            </div>
+          `}
+        `}
+
+        <!-- History -->
+        <section>
+          <h3 class="font-display font-semibold text-sm text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-3 px-1">Appointment History</h3>
+          ${history.length === 0 ? emptyState('history', 'No history yet', 'Past visits will appear here') : `
+            <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card divide-y divide-slate-100 dark:divide-slate-800 overflow-hidden">
+              ${history.map(h => `
+                <div class="flex items-center gap-3 p-3.5">
+                  <div class="w-10 h-10 rounded-xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center font-display font-bold text-sm token-display text-slate-600 dark:text-slate-300">
+                    #${h.token}
+                  </div>
+                  <div class="flex-1 min-w-0">
+                    <p class="text-sm font-medium truncate">${formatDateTime(h.createdAt)}</p>
+                    <p class="text-xs text-slate-500">${h.day}</p>
+                  </div>
+                  ${statusBadge(h.status)}
+                </div>
+              `).join('')}
+            </div>
+          `}
+        </section>
+      </main>
+    `;
+
+    refreshIcons();
+
+    // Countdown ticker
+    if (patient_countdownTimer) clearInterval(patient_countdownTimer);
+    if (eta && patient?.status === 'waiting' && eta.estimatedStart) {
+      const tick = () => {
+        const now = Date.now();
+        const target = new Date(eta.estimatedStart).getTime();
+        const diff = Math.max(0, Math.round((target - now) / 60000));
+        const label = document.getElementById('countdown-label');
+        if (label) label.textContent = diff <= 0 ? 'Any moment now' : `~${diff} min`;
+      };
+      tick();
+      patient_countdownTimer = setInterval(tick, 30000);
+    }
+  };
+
+  paint();
+  patient_unsub = store.subscribe(paint);
+  bus.on('queue:updated', paint);
+
+  // Actions
+  root.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-action]');
+    if (!btn) return;
+    if (btn.dataset.action === 'logout') {
+      store.logout('patient');
+      window.location.hash = '#/';
+    }
+  });
+}
+
+function destroyPatient() {
+  if (patient_unsub) patient_unsub();
+  if (patient_countdownTimer) clearInterval(patient_countdownTimer);
+  patient_unsub = null;
+  patient_countdownTimer = null;
+}
+
+
+/**
+ * Reception Dashboard
+ * Register walk-ins, issue tokens, manage queue status, search, emergency priority
+ */
+
+
+
+
+
+
+let reception_reception_unsub = null;
+
+function renderReception(root) {
+  const session = store.getState().sessions.reception;
+  if (!session) {
+    window.location.hash = '#/';
+    return;
+  }
+
+  const paint = () => {
+    const state = store.getState();
+    const snap = queueEngine.getSnapshot();
+    const searchQ = (document.getElementById('search-input') || {}).value || '';
+
+    const filtered = searchQ
+      ? store.searchPatients(searchQ)
+      : store.getState().patients.filter(p => p.day === state.day).sort((a, b) => b.token - a.token);
+
+    root.innerHTML = `
+      ${headerBar({
+        title: 'Reception Desk',
+        subtitle: session.name,
+        rightHtml: `
+          ${themeToggleBtn()}
+          <button data-action="seed" class="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 transition" title="Load demo patients">
+            ${icon('sparkles', 14)} Demo data
+          </button>
+          <button data-action="logout" class="p-2 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+            ${icon('log-out', 18)}
+          </button>
+        `,
+      })}
+
+      <main class="flex-1 max-w-6xl mx-auto w-full px-4 sm:px-6 py-5 view-enter">
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
+          ${metricCard('In Queue', snap.totalInQueue, snap.totalWaiting + ' waiting', 'teal')}
+          ${metricCard('Current Token', snap.currentToken ?? '—', '', 'amber')}
+          ${metricCard('Seen Today', snap.totalSeen, 'Avg ' + snap.avgConsultMin + ' min', 'slate')}
+          ${metricCard('Next Token', state.nextToken, 'Will be issued', 'rose')}
+        </div>
+
+        <div class="grid lg:grid-cols-5 gap-6">
+          <div class="lg:col-span-2 space-y-4">
+            <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card p-5">
+              <h2 class="font-display font-bold text-base mb-4 flex items-center gap-2">
+                ${icon('user-plus', 18, 'text-brand-600')} Register Patient
+              </h2>
+              <form id="register-form" class="space-y-3">
+                <div>
+                  <label class="text-xs font-medium text-slate-500 mb-1 block">Full Name</label>
+                  <input name="name" required placeholder="Patient name"
+                    class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent text-sm outline-none focus:ring-2 focus:ring-brand-500 transition" />
+                </div>
+                <div>
+                  <label class="text-xs font-medium text-slate-500 mb-1 block">Mobile Number</label>
+                  <input name="phone" required type="tel" maxlength="10" inputmode="numeric" placeholder="10-digit mobile"
+                    class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent text-sm outline-none focus:ring-2 focus:ring-brand-500 transition" />
+                </div>
+                <div>
+                  <label class="text-xs font-medium text-slate-500 mb-1 block">Notes (optional)</label>
+                  <input name="notes" placeholder="Preferred time / remarks"
+                    class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent text-sm outline-none focus:ring-2 focus:ring-brand-500 transition" />
+                </div>
+                <label class="flex items-center gap-2.5 py-1 cursor-pointer">
+                  <input type="checkbox" name="emergency" class="w-4 h-4 rounded border-slate-300 text-rose-600 focus:ring-rose-500" />
+                  <span class="text-sm font-medium text-rose-600 dark:text-rose-400">Emergency priority</span>
+                </label>
+                <button type="submit" class="w-full py-3 rounded-xl bg-brand-600 hover:bg-brand-700 text-white font-semibold text-sm shadow-soft transition active:scale-[0.98] flex items-center justify-center gap-2">
+                  ${icon('ticket', 18)} Issue Digital Token
+                </button>
+              </form>
+            </div>
+
+            <div class="rounded-2xl bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 p-4 text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+              <p class="font-semibold text-slate-700 dark:text-slate-300 mb-1">Live Queue Engine</p>
+              Tokens update instantly when the doctor starts, finishes, pauses, or when an emergency is added. ETA uses average consultation time (${snap.avgConsultMin} min).
+            </div>
+          </div>
+
+          <div class="lg:col-span-3 space-y-4">
+            <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card overflow-hidden">
+              <div class="p-4 border-b border-slate-100 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center gap-3">
+                <h2 class="font-display font-bold text-base flex items-center gap-2 flex-1">
+                  ${icon('list-ordered', 18, 'text-brand-600')} Live Queue
+                  <span class="text-xs font-normal text-slate-400 ml-1">${doctorStatusBadge(snap.doctorStatus)}</span>
+                </h2>
+                <div class="relative">
+                  <span class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">${icon('search', 16)}</span>
+                  <input id="search-input" type="search" placeholder="Search name, phone, token…"
+                    value="${searchQ.replace(/"/g, '&quot;')}"
+                    class="w-full sm:w-56 pl-9 pr-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent text-sm outline-none focus:ring-2 focus:ring-brand-500 transition" />
+                </div>
+              </div>
+
+              <div class="max-h-[28rem] overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800/80" id="queue-list">
+                ${filtered.length === 0 ? `
+                  <div class="p-10 text-center text-sm text-slate-400">No patients found. Register one or load demo data.</div>
+                ` : filtered.map(p => {
+                  const isActive = p.status === 'waiting' || p.status === 'consulting';
+                  return `
+                    <div class="p-3 sm:p-3.5 ${p.status === 'consulting' ? 'bg-teal-50/50 dark:bg-teal-950/20' : ''}">
+                      <div class="flex items-start gap-3">
+                        <div class="w-11 h-11 rounded-xl ${p.isEmergency ? 'bg-rose-100 dark:bg-rose-900/40 text-rose-700' : 'bg-brand-100 dark:bg-brand-900/40 text-brand-700 dark:text-brand-300'} flex items-center justify-center font-display font-bold text-sm token-display shrink-0">
+                          ${p.token}
+                        </div>
+                        <div class="flex-1 min-w-0">
+                          <div class="flex items-center gap-2 flex-wrap">
+                            <p class="font-semibold text-sm">${p.name}</p>
+                            ${p.isEmergency ? '<span class="text-[10px] font-bold uppercase text-rose-600 bg-rose-100 dark:bg-rose-900/50 px-1.5 py-0.5 rounded">Emergency</span>' : ''}
+                            ${statusBadge(p.status)}
+                          </div>
+                          <p class="text-xs text-slate-500 mt-0.5">${p.phone} · ${formatTime(p.createdAt)}</p>
+                          ${isActive ? `
+                            <div class="mt-2.5 flex flex-wrap gap-1.5">
+                              ${p.status === 'waiting' ? `<button data-status="consulting" data-id="${p.id}" class="px-2.5 py-1 rounded-lg text-xs font-medium bg-teal-600 text-white hover:bg-teal-700 transition">Start</button>` : ''}
+                              ${p.status === 'consulting' ? `<button data-status="completed" data-id="${p.id}" class="px-2.5 py-1 rounded-lg text-xs font-medium bg-emerald-600 text-white hover:bg-emerald-700 transition">Complete</button>` : ''}
+                              ${p.status === 'waiting' ? `<button data-status="no_show" data-id="${p.id}" class="px-2.5 py-1 rounded-lg text-xs font-medium bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-300 dark:hover:bg-slate-600 transition">No Show</button>` : ''}
+                            </div>
+                          ` : ''}
+                        </div>
+                      </div>
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    `;
+
+    refreshIcons();
+
+    const searchInput = root.querySelector('#search-input');
+    if (searchInput) {
+      let t;
+      searchInput.addEventListener('input', () => {
+        clearTimeout(t);
+        t = setTimeout(paint, 180);
+      });
+    }
+
+    root.querySelector('#register-form')?.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const name = fd.get('name');
+      const phone = fd.get('phone');
+      const notes = fd.get('notes') || '';
+      const isEmergency = fd.get('emergency') === 'on';
+      if (!name || !phone) return;
+      const p = store.registerWalkIn({ name, phone, isEmergency, notes });
+      notifications.toast('Token #' + p.token + ' issued', p.name + (isEmergency ? ' · Emergency priority' : ' · Added to queue'), 'success');
+      e.target.reset();
+    });
+  };
+
+  paint();
+  reception_unsub = store.subscribe(paint);
+  bus.on('queue:updated', paint);
+
+  root.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-action], [data-status]');
+    if (!btn) return;
+    if (btn.dataset.action === 'logout') {
+      store.logout('reception');
+      window.location.hash = '#/';
+    }
+    if (btn.dataset.action === 'seed') {
+      store.seedDemoIfEmpty();
+      notifications.toast('Demo data loaded', 'Sample patients added to queue', 'info');
+    }
+    if (btn.dataset.status && btn.dataset.id) {
+      store.setPatientStatus(btn.dataset.id, btn.dataset.status);
+      notifications.toast('Status updated', 'Marked as ' + btn.dataset.status.replace('_', ' '), 'info');
+    }
+  });
+}
+
+function destroyReception() {
+  if (reception_unsub) reception_unsub();
+  reception_unsub = null;
+}
+
+
+/**
+ * Doctor Dashboard
+ * Start / Next / Pause / Break / Emergency / Finish Day
+ * Live queue overview + stats
+ */
+
+
+
+
+
+
+let doctor_doctor_unsub = null;
+
+function renderDoctor(root) {
+  const session = store.getState().sessions.doctor;
+  if (!session) {
+    window.location.hash = '#/';
+    return;
+  }
+
+  const paint = () => {
+    const state = store.getState();
+    const doctor = state.doctor;
+    const snap = queueEngine.getSnapshot();
+    const current = store.getCurrentPatient();
+    const waiting = store.getWaitingPatients();
+
+    root.innerHTML = `
+      ${headerBar({
+        title: doctor.name,
+        subtitle: doctor.specialty,
+        rightHtml: `
+          ${themeToggleBtn()}
+          <button data-action="logout" class="p-2 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+            ${icon('log-out', 18)}
+          </button>
+        `,
+      })}
+
+      <main class="flex-1 max-w-5xl mx-auto w-full px-4 sm:px-6 py-5 view-enter space-y-5">
+        <!-- Status + Metrics -->
+        <div class="flex flex-wrap items-center gap-3 justify-between">
+          <div class="flex items-center gap-3">
+            ${doctorStatusBadge(doctor.status)}
+            <span class="text-sm text-slate-500">Avg consult · <strong class="text-slate-800 dark:text-slate-200">${doctor.avgConsultMin} min</strong></span>
+          </div>
+          <div class="flex gap-2 text-sm">
+            <span class="px-3 py-1 rounded-full bg-slate-100 dark:bg-slate-800 font-medium">${snap.totalSeen} seen today</span>
+            <span class="px-3 py-1 rounded-full bg-brand-50 dark:bg-brand-950 text-brand-700 dark:text-brand-300 font-medium">${snap.totalWaiting} waiting</span>
+          </div>
+        </div>
+
+        <div class="grid sm:grid-cols-3 gap-3">
+          ${metricCard('Current Token', current ? '#' + current.token : '—', current ? current.name : 'No active consultation', 'teal')}
+          ${metricCard('Next Up', waiting[0] ? '#' + waiting[0].token : '—', waiting[0] ? waiting[0].name : 'Queue empty', 'amber')}
+          ${metricCard('In Queue', snap.totalInQueue, snap.totalWaiting + ' waiting', 'slate')}
+        </div>
+
+        <!-- Primary Controls -->
+        <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card p-5">
+          <h2 class="font-display font-bold text-sm uppercase tracking-wider text-slate-500 mb-4">Consultation Controls</h2>
+          <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
+            <button data-action="start" class="flex flex-col items-center gap-2 p-4 rounded-xl bg-teal-600 hover:bg-teal-700 text-white transition active:scale-95 disabled:opacity-40 disabled:pointer-events-none" ${doctor.status === 'finished' || doctor.status === 'consulting' ? 'disabled' : ''}>
+              ${icon('play', 22)}
+              <span class="text-xs font-semibold">Start</span>
+            </button>
+            <button data-action="next" class="flex flex-col items-center gap-2 p-4 rounded-xl bg-brand-600 hover:bg-brand-700 text-white transition active:scale-95 disabled:opacity-40 disabled:pointer-events-none" ${doctor.status === 'finished' ? 'disabled' : ''}>
+              ${icon('skip-forward', 22)}
+              <span class="text-xs font-semibold">Next Patient</span>
+            </button>
+            <button data-action="pause" class="flex flex-col items-center gap-2 p-4 rounded-xl bg-amber-500 hover:bg-amber-600 text-white transition active:scale-95 disabled:opacity-40 disabled:pointer-events-none" ${['paused','break','emergency_pause','finished'].includes(doctor.status) ? 'disabled' : ''}>
+              ${icon('pause', 22)}
+              <span class="text-xs font-semibold">Pause</span>
+            </button>
+            <button data-action="break" class="flex flex-col items-center gap-2 p-4 rounded-xl bg-orange-500 hover:bg-orange-600 text-white transition active:scale-95 disabled:opacity-40 disabled:pointer-events-none" ${['break','finished'].includes(doctor.status) ? 'disabled' : ''}>
+              ${icon('coffee', 22)}
+              <span class="text-xs font-semibold">Lunch Break</span>
+            </button>
+            <button data-action="emergency" class="flex flex-col items-center gap-2 p-4 rounded-xl bg-rose-600 hover:bg-rose-700 text-white transition active:scale-95 disabled:opacity-40 disabled:pointer-events-none" ${doctor.status === 'finished' ? 'disabled' : ''}>
+              ${icon('alert-triangle', 22)}
+              <span class="text-xs font-semibold">Emergency</span>
+            </button>
+            <button data-action="resume" class="flex flex-col items-center gap-2 p-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white transition active:scale-95 disabled:opacity-40 disabled:pointer-events-none" ${!['paused','break','emergency_pause'].includes(doctor.status) ? 'disabled' : ''}>
+              ${icon('play-circle', 22)}
+              <span class="text-xs font-semibold">Resume</span>
+            </button>
+          </div>
+          <div class="mt-4 pt-4 border-t border-slate-100 dark:border-slate-800 flex justify-end">
+            <button data-action="finish" class="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition disabled:opacity-40" ${doctor.status === 'finished' ? 'disabled' : ''}>
+              ${icon('power', 16)} Finish Day
+            </button>
+          </div>
+        </div>
+
+        <!-- Current patient detail -->
+        ${current ? `
+          <div class="rounded-2xl border-2 border-teal-500/30 bg-teal-50/50 dark:bg-teal-950/20 p-5">
+            <div class="flex items-start justify-between gap-4">
+              <div>
+                <p class="text-xs font-medium uppercase tracking-wider text-teal-700 dark:text-teal-300 mb-1">Now Consulting</p>
+                <p class="font-display text-2xl font-bold">#${current.token} · ${current.name}</p>
+                <p class="text-sm text-slate-500 mt-1">${current.phone} · Started ${formatTime(current.consultStartedAt)}</p>
+              </div>
+              <button data-status="completed" data-id="${current.id}" class="shrink-0 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold transition">
+                Complete
+              </button>
+            </div>
+          </div>
+        ` : ''}
+
+        <!-- Waiting list -->
+        <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card overflow-hidden">
+          <div class="p-4 border-b border-slate-100 dark:border-slate-800">
+            <h2 class="font-display font-bold text-base">Waiting Queue</h2>
+          </div>
+          <div class="divide-y divide-slate-100 dark:divide-slate-800 max-h-80 overflow-y-auto">
+            ${waiting.length === 0 ? `
+              <div class="p-10 text-center text-sm text-slate-400">No patients waiting</div>
+            ` : waiting.map((p, i) => `
+              <div class="flex items-center gap-3 p-3.5">
+                <span class="w-7 h-7 rounded-lg bg-slate-100 dark:bg-slate-800 text-xs font-bold flex items-center justify-center text-slate-500">${i + 1}</span>
+                <div class="w-10 h-10 rounded-xl ${p.isEmergency ? 'bg-rose-100 dark:bg-rose-900/40 text-rose-700' : 'bg-brand-100 dark:bg-brand-900/40 text-brand-700'} flex items-center justify-center font-display font-bold text-sm token-display">
+                  ${p.token}
+                </div>
+                <div class="flex-1 min-w-0">
+                  <p class="font-semibold text-sm truncate">${p.name} ${p.isEmergency ? '<span class="text-rose-600 text-[10px] uppercase font-bold ml-1">Emergency</span>' : ''}</p>
+                  <p class="text-xs text-slate-500">${p.phone}</p>
+                </div>
+                ${statusBadge(p.status)}
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      </main>
+    `;
+
+    refreshIcons();
+  };
+
+  paint();
+  doctor_unsub = store.subscribe(paint);
+  bus.on('queue:updated', paint);
+
+  root.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-action], [data-status]');
+    if (!btn) return;
+
+    if (btn.dataset.action === 'logout') {
+      store.logout('doctor');
+      window.location.hash = '#/';
+      return;
+    }
+    if (btn.dataset.action === 'start') {
+      const res = store.doctorStartConsultation();
+      if (!res.ok) notifications.toast('Cannot start', res.error, 'warning');
+      else notifications.toast('Consultation started', '#' + res.patient.token + ' · ' + res.patient.name, 'success');
+    }
+    if (btn.dataset.action === 'next') {
+      const res = store.doctorNextPatient();
+      if (!res.ok) notifications.toast('Queue empty', res.error, 'warning');
+      else notifications.toast('Next patient', '#' + res.patient.token + ' · ' + res.patient.name, 'success');
+    }
+    if (btn.dataset.action === 'pause') {
+      store.doctorPause('paused');
+      notifications.toast('Queue paused', 'Patients will see a delay notice', 'warning');
+    }
+    if (btn.dataset.action === 'break') {
+      store.doctorPause('break');
+      notifications.toast('Lunch break', 'Queue paused for break', 'warning');
+    }
+    if (btn.dataset.action === 'emergency') {
+      store.doctorPause('emergency');
+      notifications.toast('Emergency pause', 'Queue temporarily halted', 'error');
+    }
+    if (btn.dataset.action === 'resume') {
+      store.doctorResume();
+      notifications.toast('Queue resumed', 'Doctor is available again', 'success');
+    }
+    if (btn.dataset.action === 'finish') {
+      if (confirm('Finish the day? Remaining waiting patients will be marked cancelled.')) {
+        store.doctorFinishDay();
+        notifications.toast('Day finished', 'Thank you, Doctor', 'info');
+      }
+    }
+    if (btn.dataset.status === 'completed' && btn.dataset.id) {
+      store.setPatientStatus(btn.dataset.id, 'completed');
+      notifications.toast('Consultation completed', 'Ready for next patient', 'success');
+    }
+  });
+}
+
+function destroyDoctor() {
+  if (doctor_unsub) doctor_unsub();
+  doctor_unsub = null;
+}
+
+
+/**
+ * Smart Hospital Queue — Application Bootstrap & Router
+ * Version 1.0 — Time Management & Smart Queue System
+ *
+ * Architecture is modular so future modules (AI ETA, multi-doctor,
+ * multi-hospital, EMR, billing, etc.) can plug in without redesign.
+ */
+
+
+
+
+
+
+
+
+
+const app = document.getElementById('app');
+const splash = document.getElementById('splash');
+
+// ---------- Theme ----------
+function initTheme() {
+  const saved = localStorage.getItem('shq_theme');
+  const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const theme = saved || (prefersDark ? 'dark' : 'light');
+  document.documentElement.classList.toggle('dark', theme === 'dark');
+}
+
+function toggleTheme() {
+  const isDark = document.documentElement.classList.toggle('dark');
+  localStorage.setItem('shq_theme', isDark ? 'dark' : 'light');
+}
+
+// ---------- Router ----------
+let currentDestroy = null;
+
+function route() {
+  if (currentDestroy) {
+    currentDestroy();
+    currentDestroy = null;
+  }
+
+  const hash = window.location.hash || '#/';
+  const path = hash.replace(/^#/, '') || '/';
+
+  // Clear app
+  app.innerHTML = '';
+  const root = document.createElement('div');
+  root.className = 'min-h-screen flex flex-col';
+  app.appendChild(root);
+
+  if (path === '/' || path === '') {
+    renderLogin(root);
+  } else if (path.startsWith('/patient')) {
+    renderPatient(root);
+    currentDestroy = destroyPatient;
+  } else if (path.startsWith('/reception')) {
+    renderReception(root);
+    currentDestroy = destroyReception;
+  } else if (path.startsWith('/doctor')) {
+    renderDoctor(root);
+    currentDestroy = destroyDoctor;
+  } else {
+    window.location.hash = '#/';
+  }
+
+  refreshIcons();
+}
+
+// Global action delegation for theme
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-action="toggle-theme"]');
+  if (btn) toggleTheme();
+});
+
+// ---------- Boot ----------
+function hideSplash() {
+  var splash = document.getElementById('splash');
+  if (splash) {
+    splash.style.opacity = '0';
+    splash.style.pointerEvents = 'none';
+    setTimeout(function(){ if (splash && splash.parentNode) splash.remove(); }, 400);
+  }
+}
+
+function boot() {
+  try {
+    var bar = document.getElementById('splash-bar');
+    if (bar) bar.style.width = '90%';
+    initTheme();
+    queueEngine.start();
+    notifications.start();
+    if (bar) bar.style.width = '100%';
+    window.addEventListener('hashchange', route);
+    route();
+    setTimeout(hideSplash, 350);
+  } catch (err) {
+    console.error(err);
+    var errEl = document.getElementById('splash-err');
+    if (errEl) {
+      errEl.textContent = 'Error: ' + (err.message || String(err));
+      errEl.style.display = 'block';
+    }
+    setTimeout(hideSplash, 1500);
+  }
+}
+
+setTimeout(hideSplash, 2000);
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', function(){ setTimeout(boot, 50); });
+} else {
+  setTimeout(boot, 50);
+}
+
+  </script>
+</body>
+</html>
