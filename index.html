@@ -186,6 +186,13 @@ select:focus-visible {
 }
 </style>
   <script src="https://unpkg.com/lucide@latest"></script>
+  <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+  <script>
+    // ---- Supabase Config ----
+    const SUPABASE_URL = 'https://zhcbfncxypvhugzrqyio.supabase.co';
+    const SUPABASE_ANON_KEY = 'sb_publishable_EtHaK1At2yK-j2im8U4LcQ_AtdxVH0-';
+    const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  </script>
 </head>
 <body class="bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans antialiased min-h-screen transition-colors duration-300">
   <div id="app" class="min-h-screen flex flex-col"></div>
@@ -337,10 +344,15 @@ function createInitialState() {
   return {
     version: 1,
     day: todayKey(),
-    // Single doctor for V1 — architecture supports multi-doctor later
+    // Multi-hospital: resolved after hospital code entry
+    hospitalId: null,
+    hospitalCode: null,
+    hospitalName: null,
+    doctorStatusId: null,
+    // Single doctor per hospital for V1 — architecture supports multi-doctor later
     doctor: {
-      id: 'doc-1',
-      name: 'Dr. Ananya Sharma',
+      id: null,
+      name: 'Doctor',
       specialty: 'General Physician',
       avgConsultMin: DEFAULT_AVG_CONSULT,
       status: 'available', // available | consulting | paused | break | emergency_pause | finished
@@ -372,50 +384,31 @@ function createInitialState() {
   };
 }
 
+function mapPatientRow(r) {
+  return {
+    id: r.id,
+    day: r.day,
+    name: r.name,
+    phone: r.phone,
+    token: r.token,
+    status: r.status,
+    isEmergency: r.is_emergency,
+    isAppointment: r.is_appointment,
+    notes: r.notes || '',
+    createdAt: r.created_at,
+    consultStartedAt: r.consult_started_at,
+    consultEndedAt: r.consult_ended_at,
+    doctorId: r.doctor_id,
+    hospitalId: r.hospital_id,
+  };
+}
+
 class Store {
   constructor() {
-    this.state = this._load() || createInitialState();
-    this._ensureDay();
+    this.state = createInitialState();
     this._subscribers = new Set();
-  }
-
-  _load() {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return null;
-      return JSON.parse(raw);
-    } catch {
-      return null;
-    }
-  }
-
-  _save() {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(this.state));
-    } catch (e) {
-      console.warn('Storage full or unavailable', e);
-    }
-  }
-
-  _ensureDay() {
-    if (this.state.day !== todayKey()) {
-      // New day → soft reset operational data but keep history shape
-      this.state.day = todayKey();
-      this.state.nextToken = 1;
-      this.state.queue = [];
-      this.state.doctor.status = 'available';
-      this.state.doctor.currentPatientId = null;
-      this.state.doctor.consultStartedAt = null;
-      this.state.doctor.totalSeenToday = 0;
-      this.state.doctor.pauseReason = null;
-      // Keep patients for history; mark unfinished as cancelled conceptually
-      this.state.patients.forEach(p => {
-        if (p.status === 'waiting' || p.status === 'consulting') {
-          p.status = 'cancelled';
-        }
-      });
-      this._save();
-    }
+    this._channel = null;
+    this.ready = false;
   }
 
   subscribe(fn) {
@@ -424,7 +417,6 @@ class Store {
   }
 
   notify() {
-    this._save();
     this._subscribers.forEach(fn => {
       try { fn(this.state); } catch (e) { console.error(e); }
     });
@@ -433,6 +425,242 @@ class Store {
 
   getState() {
     return this.state;
+  }
+
+  // ---------- Hospital resolution (multi-tenant) ----------
+  async initHospitalByCode(code) {
+    const clean = String(code).trim().toLowerCase();
+    if (!clean) return { ok: false, error: 'Enter a hospital code' };
+    const { data: hospital, error } = await sb
+      .from('hospitals')
+      .select('*')
+      .eq('code', clean)
+      .maybeSingle();
+    if (error || !hospital) {
+      return { ok: false, error: 'Hospital code not found' };
+    }
+    await this._loadHospital(hospital);
+    localStorage.setItem('shq_hospital_id', hospital.id);
+    localStorage.setItem('shq_hospital_code', hospital.code);
+    return { ok: true, hospital };
+  }
+
+  async initHospitalById(id) {
+    const { data: hospital, error } = await sb
+      .from('hospitals')
+      .select('*')
+      .eq('id', id)
+      .maybeSingle();
+    if (error || !hospital) return { ok: false, error: 'Hospital not found' };
+    await this._loadHospital(hospital);
+    return { ok: true, hospital };
+  }
+
+  async _loadHospital(hospital) {
+    this.state.hospitalId = hospital.id;
+    this.state.hospitalCode = hospital.code;
+    this.state.hospitalName = hospital.name;
+
+    // Ensure a doctor staff row exists for this hospital (V1: single doctor)
+    let { data: staffRow } = await sb
+      .from('staff')
+      .select('*')
+      .eq('hospital_id', hospital.id)
+      .eq('role', 'doctor')
+      .limit(1)
+      .maybeSingle();
+
+    if (!staffRow) {
+      const { data: inserted } = await sb
+        .from('staff')
+        .insert({
+          hospital_id: hospital.id,
+          role: 'doctor',
+          name: 'Doctor',
+          specialty: 'General Physician',
+          avg_consult_min: DEFAULT_AVG_CONSULT,
+          user_id: '00000000-0000-0000-0000-000000000000',
+        })
+        .select()
+        .single();
+      staffRow = inserted;
+    }
+
+    this.state.doctor.id = staffRow.id;
+    this.state.doctor.name = staffRow.name;
+    this.state.doctor.specialty = staffRow.specialty;
+    this.state.doctor.avgConsultMin = staffRow.avg_consult_min || DEFAULT_AVG_CONSULT;
+
+    // Ensure today's doctor_status row exists
+    const today = todayKey();
+    let { data: statusRow } = await sb
+      .from('doctor_status')
+      .select('*')
+      .eq('staff_id', staffRow.id)
+      .eq('day', today)
+      .maybeSingle();
+
+    if (!statusRow) {
+      const { data: inserted } = await sb
+        .from('doctor_status')
+        .insert({
+          hospital_id: hospital.id,
+          staff_id: staffRow.id,
+          day: today,
+          status: 'available',
+          next_token: 1,
+        })
+        .select()
+        .single();
+      statusRow = inserted;
+    }
+
+    this.state.doctorStatusId = statusRow.id;
+    this.state.doctor.status = statusRow.status;
+    this.state.doctor.currentPatientId = statusRow.current_patient_id;
+    this.state.doctor.consultStartedAt = statusRow.consult_started_at;
+    this.state.doctor.totalSeenToday = statusRow.total_seen_today || 0;
+    this.state.doctor.pauseReason = statusRow.pause_reason;
+    this.state.nextToken = statusRow.next_token || 1;
+    this.state.day = today;
+
+    // Load today's patients
+    const { data: patientRows } = await sb
+      .from('patients')
+      .select('*')
+      .eq('hospital_id', hospital.id)
+      .eq('day', today)
+      .order('created_at', { ascending: true });
+
+    this.state.patients = (patientRows || []).map(mapPatientRow);
+    const maxToken = this.state.patients.reduce((m, p) => Math.max(m, p.token), 0);
+    this.state.nextToken = Math.max(this.state.nextToken, maxToken + 1);
+    this._recomputeQueue();
+
+    this._subscribeRealtime();
+    this.ready = true;
+    this.notify();
+  }
+
+  _subscribeRealtime() {
+    if (this._channel) sb.removeChannel(this._channel);
+    this._channel = sb
+      .channel('hospital-' + this.state.hospitalId)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'patients', filter: `hospital_id=eq.${this.state.hospitalId}` },
+        (payload) => this._handlePatientChange(payload))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'doctor_status', filter: `hospital_id=eq.${this.state.hospitalId}` },
+        (payload) => this._handleDoctorStatusChange(payload))
+      .subscribe();
+  }
+
+  _handlePatientChange(payload) {
+    if (payload.eventType === 'DELETE') {
+      this.state.patients = this.state.patients.filter(p => p.id !== payload.old.id);
+    } else {
+      const p = mapPatientRow(payload.new);
+      if (p.day !== this.state.day) return;
+      const idx = this.state.patients.findIndex(x => x.id === p.id);
+      const prevStatus = idx >= 0 ? this.state.patients[idx].status : null;
+      if (idx >= 0) this.state.patients[idx] = p; else this.state.patients.push(p);
+      if (prevStatus !== p.status) {
+        bus.emit('patient:status', { patient: p, prev: prevStatus });
+        if (idx < 0) bus.emit('patient:registered', p);
+      }
+    }
+    this._recomputeQueue();
+    this.notify();
+  }
+
+  _handleDoctorStatusChange(payload) {
+    const r = payload.new;
+    if (!r || r.id !== this.state.doctorStatusId) return;
+    const prevStatus = this.state.doctor.status;
+    this.state.doctor.status = r.status;
+    this.state.doctor.currentPatientId = r.current_patient_id;
+    this.state.doctor.consultStartedAt = r.consult_started_at;
+    this.state.doctor.totalSeenToday = r.total_seen_today;
+    this.state.doctor.pauseReason = r.pause_reason;
+    this.state.nextToken = r.next_token;
+    if (prevStatus !== r.status && ['paused', 'break', 'emergency_pause'].includes(r.status)) {
+      bus.emit('doctor:pause', { reason: r.pause_reason });
+    }
+    if (prevStatus !== r.status && r.status === 'available' && ['paused', 'break', 'emergency_pause'].includes(prevStatus)) {
+      bus.emit('doctor:resume');
+    }
+    this.notify();
+  }
+
+  _recomputeQueue() {
+    const active = this.state.patients.filter(p => p.day === this.state.day && (p.status === 'waiting' || p.status === 'consulting'));
+    active.sort((a, b) => {
+      if (a.status === 'consulting' && b.status !== 'consulting') return -1;
+      if (b.status === 'consulting' && a.status !== 'consulting') return 1;
+      if (a.isEmergency && !b.isEmergency) return -1;
+      if (b.isEmergency && !a.isEmergency) return 1;
+      return new Date(a.createdAt) - new Date(b.createdAt);
+    });
+    this.state.queue = active.map(p => p.id);
+  }
+
+  // ---------- Background sync helpers (fire-and-forget) ----------
+  async _pushPatientInsert(p) {
+    try {
+      const { error } = await sb.from('patients').insert({
+        id: p.id,
+        hospital_id: this.state.hospitalId,
+        doctor_id: p.doctorId,
+        day: p.day,
+        token: p.token,
+        name: p.name,
+        phone: p.phone,
+        status: p.status,
+        is_emergency: p.isEmergency,
+        is_appointment: !!p.isAppointment,
+        notes: p.notes,
+        created_at: p.createdAt,
+      });
+      if (error) throw error;
+    } catch (e) {
+      console.error(e);
+      notifications.toast('Sync issue', 'Could not save patient to server', 'error');
+    }
+  }
+
+  async _pushPatientUpdate(p) {
+    try {
+      const { error } = await sb.from('patients').update({
+        status: p.status,
+        consult_started_at: p.consultStartedAt,
+        consult_ended_at: p.consultEndedAt,
+      }).eq('id', p.id);
+      if (error) throw error;
+    } catch (e) {
+      console.error(e);
+      notifications.toast('Sync issue', 'Could not update patient on server', 'error');
+    }
+  }
+
+  async _pushDoctorStatus() {
+    try {
+      const { error } = await sb.from('doctor_status').update({
+        status: this.state.doctor.status,
+        current_patient_id: this.state.doctor.currentPatientId,
+        consult_started_at: this.state.doctor.consultStartedAt,
+        total_seen_today: this.state.doctor.totalSeenToday,
+        pause_reason: this.state.doctor.pauseReason,
+        next_token: this.state.nextToken,
+      }).eq('id', this.state.doctorStatusId);
+      if (error) throw error;
+    } catch (e) {
+      console.error(e);
+      notifications.toast('Sync issue', 'Could not update doctor status on server', 'error');
+    }
+  }
+
+  async _pushStaffAvg() {
+    try {
+      await sb.from('staff').update({ avg_consult_min: this.state.doctor.avgConsultMin }).eq('id', this.state.doctor.id);
+    } catch (e) { console.error(e); }
   }
 
   // ---------- Auth (simulated OTP) ----------
@@ -473,40 +701,27 @@ class Store {
     const cleanPhone = String(phone).replace(/\D/g, '').slice(-10);
     const token = this.state.nextToken++;
     const patient = {
-      id: uid('pt-'),
+      id: (crypto.randomUUID ? crypto.randomUUID() : uid('pt-')),
       day: this.state.day,
       name: name.trim(),
       phone: cleanPhone,
       token,
       status: 'waiting',
       isEmergency: !!isEmergency,
+      isAppointment: false,
       notes,
       createdAt: new Date().toISOString(),
       consultStartedAt: null,
       consultEndedAt: null,
-      estimatedStart: null, // filled by engine
-      actualStart: null,
       doctorId: this.state.doctor.id,
     };
     this.state.patients.push(patient);
-
-    if (isEmergency) {
-      // Insert near front (after current consulting if any)
-      const consultingIdx = this.state.queue.findIndex(id => {
-        const p = this.getPatient(id);
-        return p && p.status === 'consulting';
-      });
-      if (consultingIdx >= 0) {
-        this.state.queue.splice(consultingIdx + 1, 0, patient.id);
-      } else {
-        this.state.queue.unshift(patient.id);
-      }
-    } else {
-      this.state.queue.push(patient.id);
-    }
+    this._recomputeQueue();
 
     this.notify();
     bus.emit('patient:registered', patient);
+    this._pushPatientInsert(patient);
+    this._pushDoctorStatus(); // persists updated next_token
     return patient;
   }
 
@@ -540,10 +755,10 @@ class Store {
     if (!p) return false;
     const prev = p.status;
     p.status = status;
+    let avgChanged = false;
 
     if (status === 'consulting') {
       p.consultStartedAt = new Date().toISOString();
-      p.actualStart = p.consultStartedAt;
       this.state.doctor.status = 'consulting';
       this.state.doctor.currentPatientId = patientId;
       this.state.doctor.consultStartedAt = p.consultStartedAt;
@@ -559,18 +774,16 @@ class Store {
         this.state.doctor.avgConsultMin = Math.round(
           alpha * duration + (1 - alpha) * this.state.doctor.avgConsultMin
         );
+        avgChanged = true;
       }
       this.state.doctor.currentPatientId = null;
       this.state.doctor.consultStartedAt = null;
       if (this.state.doctor.status === 'consulting') {
         this.state.doctor.status = 'available';
       }
-      // Remove from active queue
-      this.state.queue = this.state.queue.filter(id => id !== patientId);
     }
 
     if (status === 'no_show' || status === 'cancelled') {
-      this.state.queue = this.state.queue.filter(id => id !== patientId);
       if (this.state.doctor.currentPatientId === patientId) {
         this.state.doctor.currentPatientId = null;
         this.state.doctor.consultStartedAt = null;
@@ -578,8 +791,12 @@ class Store {
       }
     }
 
+    this._recomputeQueue();
     this.notify();
     bus.emit('patient:status', { patient: p, prev });
+    this._pushPatientUpdate(p);
+    this._pushDoctorStatus();
+    if (avgChanged) this._pushStaffAvg();
     return true;
   }
 
@@ -608,6 +825,7 @@ class Store {
     this.state.doctor.pauseReason = reason;
     this.notify();
     bus.emit('doctor:pause', { reason });
+    this._pushDoctorStatus();
   }
 
   doctorResume() {
@@ -615,18 +833,22 @@ class Store {
     this.state.doctor.pauseReason = null;
     this.notify();
     bus.emit('doctor:resume');
+    this._pushDoctorStatus();
   }
 
   doctorFinishDay() {
     this.state.doctor.status = 'finished';
     // Mark remaining waiting as cancelled for the day
+    const toCancel = [];
     this.state.queue.forEach(id => {
       const p = this.getPatient(id);
-      if (p && p.status === 'waiting') p.status = 'cancelled';
+      if (p && p.status === 'waiting') { p.status = 'cancelled'; toCancel.push(p); }
     });
-    this.state.queue = [];
     this.state.doctor.currentPatientId = null;
+    this._recomputeQueue();
     this.notify();
+    this._pushDoctorStatus();
+    toCancel.forEach(p => this._pushPatientUpdate(p));
   }
 
   // ---------- Derived helpers ----------
@@ -687,8 +909,10 @@ class Store {
   }
 
   resetAll() {
+    localStorage.removeItem('shq_hospital_id');
+    localStorage.removeItem('shq_hospital_code');
+    if (this._channel) sb.removeChannel(this._channel);
     this.state = createInitialState();
-    this._save();
     this.notify();
   }
 }
@@ -1187,6 +1411,8 @@ function refreshIcons() {
 
 
 function renderLogin(root) {
+  const hasHospital = !!store.getState().hospitalId;
+
   root.innerHTML = `
     <div class="min-h-screen flex flex-col">
       <!-- Top bar -->
@@ -1203,12 +1429,26 @@ function renderLogin(root) {
             </div>
             <h1 class="font-display text-2xl sm:text-3xl font-extrabold tracking-tight">Smart Hospital Queue</h1>
             <p class="mt-2 text-slate-500 dark:text-slate-400 text-sm leading-relaxed">
-              Live digital tokens · Accurate ETA · Zero long waits
+              ${hasHospital ? escapeHtml(store.getState().hospitalName || '') : 'Live digital tokens · Accurate ETA · Zero long waits'}
             </p>
           </div>
 
+          <!-- Hospital code gate -->
+          <div id="hospital-gate" class="${hasHospital ? 'hidden' : ''} mb-6">
+            <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card p-5">
+              <h2 class="font-display font-bold text-base mb-1">Enter Hospital Code</h2>
+              <p class="text-xs text-slate-500 mb-4">Your hospital admin will give you this code.</p>
+              <input id="hospital-code-input" type="text" placeholder="e.g. apollo-anna-nagar"
+                class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent text-sm outline-none focus:ring-2 focus:ring-brand-500 transition mb-3" />
+              <button id="btn-hospital-code" class="w-full py-3 rounded-xl bg-brand-600 hover:bg-brand-700 text-white font-semibold text-sm shadow-soft transition active:scale-[0.98]">
+                Continue
+              </button>
+              <p id="hospital-code-error" class="text-xs text-rose-500 mt-3 text-center hidden"></p>
+            </div>
+          </div>
+
           <!-- Role cards -->
-          <div class="space-y-3" id="role-select">
+          <div class="space-y-3 ${hasHospital ? '' : 'hidden'}" id="role-select">
             <button data-role="patient" class="role-card w-full group flex items-center gap-4 p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card hover:border-brand-400 dark:hover:border-brand-600 transition card-interactive text-left">
               <div class="w-12 h-12 rounded-xl bg-brand-50 dark:bg-brand-950 text-brand-600 dark:text-brand-400 flex items-center justify-center group-hover:scale-105 transition">
                 ${icon('smartphone', 22)}
@@ -1271,7 +1511,7 @@ function renderLogin(root) {
           </div>
 
           <p class="text-center text-[11px] text-slate-400 mt-8">
-            Demo mode · Data stays in this browser · Version 1.0
+            ${hasHospital ? `<button data-action="change-hospital" class="underline hover:text-slate-600">Change hospital</button> · ` : ''}Version 1.0
           </p>
         </div>
       </div>
@@ -1279,6 +1519,33 @@ function renderLogin(root) {
   `;
 
   refreshIcons();
+
+  // Hospital code entry
+  root.querySelector('#btn-hospital-code')?.addEventListener('click', async () => {
+    const codeInput = root.querySelector('#hospital-code-input');
+    const err = root.querySelector('#hospital-code-error');
+    const btn = root.querySelector('#btn-hospital-code');
+    btn.disabled = true;
+    btn.textContent = 'Checking…';
+    const res = await store.initHospitalByCode(codeInput.value);
+    btn.disabled = false;
+    btn.textContent = 'Continue';
+    if (!res.ok) {
+      err.textContent = res.error;
+      err.classList.remove('hidden');
+      return;
+    }
+    notifications.toast('Connected', res.hospital.name, 'success');
+    renderLogin(root);
+  });
+  root.querySelector('#hospital-code-input')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') root.querySelector('#btn-hospital-code')?.click();
+  });
+
+  root.querySelector('[data-action="change-hospital"]')?.addEventListener('click', () => {
+    store.resetAll();
+    renderLogin(root);
+  });
 
   // Role selection
   root.querySelectorAll('[data-role]').forEach(btn => {
@@ -1342,7 +1609,7 @@ let patient_patient_countdownTimer = null;
 
 function renderPatient(root) {
   const session = store.getState().sessions.patient;
-  if (!session) {
+  if (!session || !store.getState().hospitalId) {
     window.location.hash = '#/';
     return;
   }
@@ -1542,7 +1809,7 @@ let reception_reception_unsub = null;
 
 function renderReception(root) {
   const session = store.getState().sessions.reception;
-  if (!session) {
+  if (!session || !store.getState().hospitalId) {
     window.location.hash = '#/';
     return;
   }
@@ -1737,7 +2004,7 @@ let doctor_doctor_unsub = null;
 
 function renderDoctor(root) {
   const session = store.getState().sessions.doctor;
-  if (!session) {
+  if (!session || !store.getState().hospitalId) {
     window.location.hash = '#/';
     return;
   }
@@ -2003,11 +2270,26 @@ function hideSplash() {
   }
 }
 
-function boot() {
+async function boot() {
   try {
     var bar = document.getElementById('splash-bar');
-    if (bar) bar.style.width = '90%';
+    if (bar) bar.style.width = '60%';
     initTheme();
+
+    // Resolve hospital: URL param (?h=CODE for patient QR links) takes priority, else remembered device hospital
+    const hash = window.location.hash || '#/';
+    const qIdx = hash.indexOf('?');
+    const params = new URLSearchParams(qIdx >= 0 ? hash.slice(qIdx + 1) : '');
+    const urlCode = params.get('h');
+
+    if (urlCode) {
+      await store.initHospitalByCode(urlCode);
+    } else {
+      const savedId = localStorage.getItem('shq_hospital_id');
+      if (savedId) await store.initHospitalById(savedId);
+    }
+
+    if (bar) bar.style.width = '90%';
     queueEngine.start();
     notifications.start();
     if (bar) bar.style.width = '100%';
