@@ -431,29 +431,39 @@ class Store {
   async initHospitalByCode(code) {
     const clean = String(code).trim().toLowerCase();
     if (!clean) return { ok: false, error: 'Enter a hospital code' };
-    const { data: hospital, error } = await sb
-      .from('hospitals')
-      .select('*')
-      .eq('code', clean)
-      .maybeSingle();
-    if (error || !hospital) {
-      return { ok: false, error: 'Hospital code not found' };
+    try {
+      const { data: hospital, error } = await sb
+        .from('hospitals')
+        .select('*')
+        .eq('code', clean)
+        .maybeSingle();
+      if (error || !hospital) {
+        return { ok: false, error: 'Hospital code not found' };
+      }
+      await this._loadHospital(hospital);
+      localStorage.setItem('shq_hospital_id', hospital.id);
+      localStorage.setItem('shq_hospital_code', hospital.code);
+      return { ok: true, hospital };
+    } catch (e) {
+      console.error(e);
+      return { ok: false, error: 'Connection error: ' + (e.message || e) };
     }
-    await this._loadHospital(hospital);
-    localStorage.setItem('shq_hospital_id', hospital.id);
-    localStorage.setItem('shq_hospital_code', hospital.code);
-    return { ok: true, hospital };
   }
 
   async initHospitalById(id) {
-    const { data: hospital, error } = await sb
-      .from('hospitals')
-      .select('*')
-      .eq('id', id)
-      .maybeSingle();
-    if (error || !hospital) return { ok: false, error: 'Hospital not found' };
-    await this._loadHospital(hospital);
-    return { ok: true, hospital };
+    try {
+      const { data: hospital, error } = await sb
+        .from('hospitals')
+        .select('*')
+        .eq('id', id)
+        .maybeSingle();
+      if (error || !hospital) return { ok: false, error: 'Hospital not found' };
+      await this._loadHospital(hospital);
+      return { ok: true, hospital };
+    } catch (e) {
+      console.error(e);
+      return { ok: false, error: 'Connection error: ' + (e.message || e) };
+    }
   }
 
   async _loadHospital(hospital) {
@@ -479,7 +489,6 @@ class Store {
           name: 'Doctor',
           specialty: 'General Physician',
           avg_consult_min: DEFAULT_AVG_CONSULT,
-          user_id: '00000000-0000-0000-0000-000000000000',
         })
         .select()
         .single();
