@@ -1419,8 +1419,15 @@ function refreshIcons() {
 
 
 
+const ROLE_BRANDING = {
+  doctor: { title: 'Doctor', tagline: 'Welcome Doctor — consultation & queue control', icon: 'stethoscope', gradient: 'from-violet-500 to-purple-700' },
+  reception: { title: 'Reception Desk', tagline: 'Register patients & manage the queue', icon: 'clipboard-list', gradient: 'from-sky-500 to-blue-700' },
+  patient: { title: 'My Queue', tagline: 'Track your token live', icon: 'smartphone', gradient: 'from-emerald-500 to-teal-600' },
+};
+
 function renderLogin(root) {
   const hasHospital = !!store.getState().hospitalId;
+  const branding = ROLE_BRANDING[PENDING_ROLE] || { title: 'Smart Hospital Queue', tagline: 'Live digital tokens · Accurate ETA · Zero long waits', icon: 'clock', gradient: 'from-brand-500 to-teal-600' };
 
   root.innerHTML = `
     <div class="min-h-screen flex flex-col">
@@ -1433,12 +1440,12 @@ function renderLogin(root) {
       <div class="flex-1 flex flex-col items-center justify-center px-5 py-10">
         <div class="w-full max-w-md">
           <div class="text-center mb-8">
-            <div class="inline-flex w-16 h-16 rounded-2xl bg-gradient-to-br from-brand-500 to-teal-600 text-white items-center justify-center shadow-glow mb-5">
-              ${icon('clock', 32)}
+            <div class="inline-flex w-16 h-16 rounded-2xl bg-gradient-to-br ${branding.gradient} text-white items-center justify-center shadow-glow mb-5">
+              ${icon(branding.icon, 32)}
             </div>
-            <h1 class="font-display text-2xl sm:text-3xl font-extrabold tracking-tight">Smart Hospital Queue</h1>
+            <h1 class="font-display text-2xl sm:text-3xl font-extrabold tracking-tight">${branding.title}</h1>
             <p class="mt-2 text-slate-500 dark:text-slate-400 text-sm leading-relaxed">
-              ${hasHospital ? escapeHtml(store.getState().hospitalName || '') : 'Live digital tokens · Accurate ETA · Zero long waits'}
+              ${hasHospital ? escapeHtml(store.getState().hospitalName || '') : branding.tagline}
             </p>
           </div>
 
