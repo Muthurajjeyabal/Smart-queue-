@@ -337,6 +337,10 @@ const STORAGE_KEY = 'shq_v1';
 
 const DEFAULT_AVG_CONSULT = 10; // minutes
 
+// Cross-hospital "find shortest wait" discovery — built, but off for now.
+// Flip to true (and re-upload) whenever ready to launch it.
+const EXPLORE_FEATURE_ENABLED = false;
+
 /** @typedef {'waiting'|'consulting'|'completed'|'no_show'|'cancelled'} PatientStatus */
 /** @typedef {'available'|'consulting'|'paused'|'break'|'emergency_pause'|'finished'} DoctorStatus */
 
@@ -498,6 +502,8 @@ class Store {
     this.state.hospitalId = hospital.id;
     this.state.hospitalCode = hospital.code;
     this.state.hospitalName = hospital.name;
+    this.state.hospitalPhone = hospital.phone || '';
+    this.state.hospitalAddress = hospital.address || '';
 
     // Ensure a doctor staff row exists for this hospital (V1: single doctor)
     let { data: staffRow } = await sb
@@ -778,6 +784,15 @@ class Store {
     return this.state.patients
       .filter(p => p.phone === clean)
       .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0] || null;
+  }
+
+  // Multiple family members can share one phone — used by the patient app
+  // to let one login switch between several active tokens.
+  getAllPatientsByPhone(phone) {
+    const clean = String(phone).replace(/\D/g, '').slice(-10);
+    return this.state.patients
+      .filter(p => p.phone === clean && p.day === this.state.day)
+      .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
   }
 
   getPatientByToken(token) {
@@ -1270,6 +1285,7 @@ class NotificationService {
       kind === '15min' ? 'Your turn in ~15 min' :
       kind === '10min' ? 'Your turn in ~10 min' :
       kind === 'arrive' ? 'Please Arrive Now' :
+      kind === 'ahead3' ? 'Almost Your Turn' :
       kind === 'next' ? 'You are Next!' : 'Queue Update';
 
     showBrowserNotification(title, body, `shq-${patient.id}-${kind}`);
@@ -1304,6 +1320,17 @@ class NotificationService {
           t.kind === 'arrive' || t.kind === 'next' ? 'warning' : 'info'
         );
         this._notifyPatient(patient, t.kind, t.body);
+      }
+    }
+
+    // Patients-ahead based reminder (independent of time estimate)
+    if (eta.patientsAhead != null) {
+      const aheadKey = `${patient.id}-ahead3`;
+      if (eta.patientsAhead <= 3 && eta.patientsAhead > 0 && !this._has(aheadKey)) {
+        this._mark(aheadKey);
+        const body = `Only ${eta.patientsAhead} patient${eta.patientsAhead === 1 ? '' : 's'} ahead of you now. Head to the hospital soon.`;
+        this.toast('Almost your turn', body, 'warning');
+        this._notifyPatient(patient, 'ahead3', body);
       }
     }
   }
@@ -1506,6 +1533,11 @@ function renderLogin(root) {
                 <p class="text-xs text-rose-500">Hospital code not found</p>
                 <div id="hospital-code-suggestions" class="flex flex-wrap justify-center gap-2 mt-2"></div>
               </div>
+              ${EXPLORE_FEATURE_ENABLED && PENDING_ROLE !== 'reception' && PENDING_ROLE !== 'doctor' ? `
+                <button id="btn-explore" type="button" class="w-full mt-3 py-2.5 rounded-xl border border-dashed border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400 text-xs font-medium flex items-center justify-center gap-1.5 hover:border-${branding.accent}-400 hover:text-${branding.accent}-600 transition">
+                  ${icon('search', 14)} Don't know your hospital? Find the shortest wait nearby
+                </button>
+              ` : ''}
             </div>
             <p class="text-center text-[10px] text-slate-400 mt-4">Powered by Smart Hospital Queue Platform</p>
           </div>
@@ -1653,6 +1685,10 @@ function renderLogin(root) {
     });
   });
 
+  root.querySelector('#btn-explore')?.addEventListener('click', () => {
+    window.location.hash = '#/explore';
+  });
+
   root.querySelector('[data-action="change-hospital"]')?.addEventListener('click', () => {
     store.resetAll();
     renderLogin(root);
@@ -1795,14 +1831,22 @@ function renderPatient(root) {
     return;
   }
 
+  let selectedPatientId = null;
+
   const paint = () => {
     const state = store.getState();
-    const patient = store.getPatientByPhone(session.phone);
+    const familyPatients = store.getAllPatientsByPhone(session.phone);
+    if (!selectedPatientId || !familyPatients.find(p => p.id === selectedPatientId)) {
+      const activeOne = familyPatients.find(p => p.status === 'waiting' || p.status === 'consulting');
+      selectedPatientId = (activeOne || familyPatients[familyPatients.length - 1])?.id || null;
+    }
+    const patient = familyPatients.find(p => p.id === selectedPatientId) || null;
     const snap = queueEngine.getSnapshot();
     const eta = patient ? queueEngine.getEtaForPatient(patient.id) : null;
     const history = store.getHistoryForPhone(session.phone);
 
     const hasActive = patient && (patient.status === 'waiting' || patient.status === 'consulting');
+    const feedbackDone = patient && localStorage.getItem(`shq_feedback_${patient.id}`) === '1';
 
     root.innerHTML = `
       ${headerBar({
@@ -1817,6 +1861,16 @@ function renderPatient(root) {
       })}
 
       <main class="flex-1 max-w-lg mx-auto w-full px-4 py-5 space-y-5 view-enter">
+        ${familyPatients.length > 1 ? `
+          <div class="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1">
+            ${familyPatients.map(p => `
+              <button data-select-patient="${p.id}" class="shrink-0 flex items-center gap-2 px-3 py-2 rounded-xl border text-xs font-medium transition ${p.id === selectedPatientId ? 'bg-brand-600 text-white border-brand-600' : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300'}">
+                <span class="font-display font-bold">#${p.token}</span> ${escapeHtml(p.name)}
+              </button>
+            `).join('')}
+          </div>
+        ` : ''}
+
         ${!patient ? `
           <div class="rounded-2xl border border-dashed border-slate-300 dark:border-slate-700 p-8 text-center">
             <div class="w-14 h-14 mx-auto rounded-2xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-400 mb-4">
@@ -1845,6 +1899,16 @@ function renderPatient(root) {
               <p class="mt-3 text-brand-50 font-medium">${patient.name}</p>
               <p class="text-xs text-brand-100/80 mt-0.5">${formatDateTime(patient.createdAt)}</p>
             </div>
+          </div>
+
+          <!-- Quick actions -->
+          <div class="grid grid-cols-2 gap-3">
+            <a href="tel:${escapeHtml(state.hospitalPhone || '')}" class="${state.hospitalPhone ? '' : 'pointer-events-none opacity-40'} flex items-center justify-center gap-2 py-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card text-sm font-medium hover:border-brand-400 transition">
+              ${icon('phone', 16)} Call Reception
+            </a>
+            <a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(state.hospitalAddress || state.hospitalName || '')}" target="_blank" rel="noopener" class="flex items-center justify-center gap-2 py-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card text-sm font-medium hover:border-brand-400 transition">
+              ${icon('map-pin', 16)} Directions
+            </a>
           </div>
 
           ${hasActive ? `
@@ -1911,6 +1975,30 @@ function renderPatient(root) {
               ${statusBadge(patient.status)}
             </div>
           `}
+
+          ${patient.status === 'completed' ? `
+            <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card p-5">
+              ${feedbackDone ? `
+                <p class="text-sm text-emerald-600 dark:text-emerald-400 font-medium text-center flex items-center justify-center gap-2">
+                  ${icon('check-circle-2', 16)} Thanks for your feedback!
+                </p>
+              ` : `
+                <h3 class="font-display font-semibold text-sm mb-1">How was your visit?</h3>
+                <p class="text-xs text-slate-500 mb-3">Your feedback helps the hospital improve.</p>
+                <div id="star-rating" class="flex gap-1.5 mb-3">
+                  ${[1,2,3,4,5].map(n => `
+                    <button type="button" data-star="${n}" class="star-btn text-2xl text-slate-300 dark:text-slate-700 transition">★</button>
+                  `).join('')}
+                </div>
+                <textarea id="feedback-comment" rows="2" placeholder="Anything you'd like to share? (optional)"
+                  class="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent text-sm outline-none focus:ring-2 focus:ring-brand-500 transition mb-3"></textarea>
+                <button id="btn-submit-feedback" data-patient-id="${patient.id}" data-token="${patient.token}" data-name="${escapeHtml(patient.name)}" disabled
+                  class="w-full py-2.5 rounded-xl bg-brand-600 hover:bg-brand-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold text-sm shadow-soft transition active:scale-[0.98]">
+                  Submit Feedback
+                </button>
+              `}
+            </div>
+          ` : ''}
         `}
 
         <!-- History -->
@@ -1938,6 +2026,23 @@ function renderPatient(root) {
 
     refreshIcons();
 
+    // Star rating interaction
+    let selectedStars = 0;
+    const starBtns = root.querySelectorAll('.star-btn');
+    starBtns.forEach(b => {
+      b.addEventListener('click', () => {
+        selectedStars = Number(b.dataset.star);
+        starBtns.forEach(sb => {
+          sb.classList.toggle('text-amber-400', Number(sb.dataset.star) <= selectedStars);
+          sb.classList.toggle('text-slate-300', Number(sb.dataset.star) > selectedStars);
+          sb.classList.toggle('dark:text-slate-700', Number(sb.dataset.star) > selectedStars);
+        });
+        const submitBtn = root.querySelector('#btn-submit-feedback');
+        if (submitBtn) submitBtn.disabled = false;
+        submitBtn?.setAttribute('data-rating', String(selectedStars));
+      });
+    });
+
     // Countdown ticker
     if (patient_countdownTimer) clearInterval(patient_countdownTimer);
     if (eta && patient?.status === 'waiting' && eta.estimatedStart) {
@@ -1958,7 +2063,43 @@ function renderPatient(root) {
   bus.on('queue:updated', paint);
 
   // Actions
-  root.addEventListener('click', (e) => {
+  root.addEventListener('click', async (e) => {
+    const selectBtn = e.target.closest('[data-select-patient]');
+    if (selectBtn) {
+      selectedPatientId = selectBtn.dataset.selectPatient;
+      paint();
+      return;
+    }
+    const feedbackBtn = e.target.closest('#btn-submit-feedback');
+    if (feedbackBtn) {
+      const rating = Number(feedbackBtn.dataset.rating || 0);
+      if (!rating) return;
+      const patientId = feedbackBtn.dataset.patientId;
+      const token = Number(feedbackBtn.dataset.token);
+      const name = feedbackBtn.dataset.name;
+      const comment = root.querySelector('#feedback-comment')?.value.trim() || null;
+      feedbackBtn.disabled = true;
+      feedbackBtn.textContent = 'Submitting…';
+      try {
+        await sb.from('feedback').insert({
+          hospital_id: store.getState().hospitalId,
+          patient_id: patientId,
+          patient_name: name,
+          token,
+          rating,
+          comment,
+        });
+        localStorage.setItem(`shq_feedback_${patientId}`, '1');
+        notifications.toast('Thank you!', 'Your feedback was submitted', 'success');
+        paint();
+      } catch (err) {
+        console.error(err);
+        feedbackBtn.disabled = false;
+        feedbackBtn.textContent = 'Submit Feedback';
+        notifications.toast('Error', 'Could not submit feedback', 'error');
+      }
+      return;
+    }
     const btn = e.target.closest('[data-action]');
     if (!btn) return;
     if (btn.dataset.action === 'logout') {
@@ -2195,6 +2336,117 @@ function slugify(name) {
     .replace(/^-+|-+$/g, '');
   const suffix = Math.random().toString(36).slice(2, 5);
   return (base || 'hospital') + '-' + suffix;
+}
+
+async function renderExplore(root) {
+  root.innerHTML = `
+    <div class="min-h-screen flex flex-col">
+      <div class="flex items-center justify-between px-5 py-4 border-b border-slate-200 dark:border-slate-800 sticky top-0 bg-slate-50 dark:bg-slate-950 z-10">
+        <div>
+          <h1 class="font-display text-lg font-bold flex items-center gap-2">${icon('search', 18)} Find the Shortest Wait</h1>
+          <p class="text-xs text-slate-500">Live doctor status across hospitals</p>
+        </div>
+        <a href="#/" class="text-xs underline text-slate-500 shrink-0">Back</a>
+      </div>
+      <div class="flex-1 px-4 py-5 max-w-md w-full mx-auto">
+        <div id="explore-list" class="space-y-3">
+          <div class="text-center py-10 text-slate-400 text-sm">
+            ${icon('loader-2', 20, 'animate-spin mx-auto mb-2')}
+            Loading live status…
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+  refreshIcons();
+
+  const today = todayKey();
+  try {
+    const [{ data: hospitals }, { data: statuses }, { data: staffRows }, { data: patients }] = await Promise.all([
+      sb.from('hospitals').select('id,name,code,address,phone'),
+      sb.from('doctor_status').select('hospital_id,status,total_seen_today').eq('day', today),
+      sb.from('staff').select('hospital_id,avg_consult_min').eq('role', 'doctor'),
+      sb.from('patients').select('hospital_id,status').eq('day', today).in('status', ['waiting', 'consulting']),
+    ]);
+
+    const statusByHospital = {};
+    (statuses || []).forEach(s => { statusByHospital[s.hospital_id] = s; });
+    const avgByHospital = {};
+    (staffRows || []).forEach(s => { avgByHospital[s.hospital_id] = s.avg_consult_min || DEFAULT_AVG_CONSULT; });
+    const waitingByHospital = {};
+    (patients || []).forEach(p => { waitingByHospital[p.hospital_id] = (waitingByHospital[p.hospital_id] || 0) + 1; });
+
+    const rows = (hospitals || []).map(h => {
+      const st = statusByHospital[h.id];
+      const status = st?.status || 'unknown';
+      const waiting = waitingByHospital[h.id] || 0;
+      const avgMin = avgByHospital[h.id] || DEFAULT_AVG_CONSULT;
+      const isOpen = !!st && status !== 'finished';
+      const estWait = waiting * avgMin;
+      return { ...h, status, waiting, estWait, isOpen };
+    });
+
+    // Sort: open hospitals first (by shortest estimated wait), closed/unknown last
+    rows.sort((a, b) => {
+      if (a.isOpen !== b.isOpen) return a.isOpen ? -1 : 1;
+      return a.estWait - b.estWait;
+    });
+
+    const listEl = root.querySelector('#explore-list');
+    if (!rows.length) {
+      listEl.innerHTML = `<p class="text-center text-sm text-slate-400 py-10">No hospitals found yet.</p>`;
+      return;
+    }
+
+    const STATUS_META = {
+      available: { label: 'Available', cls: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200' },
+      consulting: { label: 'In Consultation', cls: 'bg-teal-100 text-teal-800 dark:bg-teal-900/40 dark:text-teal-200' },
+      paused: { label: 'Paused', cls: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200' },
+      break: { label: 'On Break', cls: 'bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-200' },
+      emergency_pause: { label: 'Emergency', cls: 'bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-200' },
+      finished: { label: 'Closed for today', cls: 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400' },
+      unknown: { label: 'Not started', cls: 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400' },
+    };
+
+    listEl.innerHTML = rows.map((h, idx) => {
+      const meta = STATUS_META[h.status] || STATUS_META.unknown;
+      const badge = idx === 0 && h.isOpen ? `<span class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500 text-white">FASTEST</span>` : '';
+      return `
+        <button data-explore-code="${escapeHtml(h.code)}" class="w-full text-left rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card p-4 hover:border-brand-400 transition ${!h.isOpen ? 'opacity-60' : ''}">
+          <div class="flex items-start justify-between gap-2">
+            <div>
+              <p class="font-semibold text-sm flex items-center gap-2">${escapeHtml(h.name)} ${badge}</p>
+              <p class="text-[11px] text-slate-500 mt-0.5">${escapeHtml(h.address || '')}</p>
+            </div>
+            <span class="text-[10px] font-semibold px-2 py-1 rounded-full whitespace-nowrap ${meta.cls}">${meta.label}</span>
+          </div>
+          ${h.isOpen ? `
+            <div class="flex items-center gap-4 mt-3 text-xs text-slate-600 dark:text-slate-400">
+              <span class="flex items-center gap-1">${icon('users', 13)} ${h.waiting} waiting</span>
+              <span class="flex items-center gap-1">${icon('clock', 13)} ~${h.estWait} min wait</span>
+            </div>
+          ` : `<p class="text-[11px] text-slate-400 mt-2">Doctor hasn't started today, or day is over.</p>`}
+        </button>
+      `;
+    }).join('');
+
+    listEl.querySelectorAll('[data-explore-code]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        const res = await store.initHospitalByCode(btn.dataset.exploreCode);
+        if (res.ok) {
+          PENDING_ROLE = 'patient';
+          window.location.hash = '#/';
+        } else {
+          btn.disabled = false;
+          notifications.toast('Error', 'Could not open this hospital', 'error');
+        }
+      });
+    });
+  } catch (e) {
+    console.error(e);
+    root.querySelector('#explore-list').innerHTML = `<p class="text-center text-sm text-rose-500 py-10">Could not load hospitals. Check your connection.</p>`;
+  }
 }
 
 function renderAdmin(root) {
@@ -2572,6 +2824,8 @@ function route() {
     currentDestroy = destroyDoctor;
   } else if (path.startsWith('/admin')) {
     renderAdmin(root);
+  } else if (path.startsWith('/explore') && EXPLORE_FEATURE_ENABLED) {
+    renderExplore(root);
   } else {
     window.location.hash = '#/';
   }
