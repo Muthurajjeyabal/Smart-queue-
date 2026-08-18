@@ -434,7 +434,7 @@ class Store {
     try {
       const { data: hospital, error } = await sb
         .from('hospitals')
-        .select('*')
+        .select('id,name,code,address,phone,owner_id,created_at')
         .eq('code', clean)
         .maybeSingle();
       if (error || !hospital) {
@@ -482,7 +482,7 @@ class Store {
     try {
       const { data: hospital, error } = await sb
         .from('hospitals')
-        .select('*')
+        .select('id,name,code,address,phone,owner_id,created_at')
         .eq('id', id)
         .maybeSingle();
       if (error || !hospital) return { ok: false, error: 'Hospital not found' };
@@ -1513,7 +1513,7 @@ function renderLogin(root) {
           </div>
 
           <!-- Role cards -->
-          <div class="space-y-3 ${hasHospital && PENDING_ROLE !== 'patient' ? '' : 'hidden'}" id="role-select">
+          <div class="space-y-3 ${hasHospital && !PENDING_ROLE ? '' : 'hidden'}" id="role-select">
             <button data-role="patient" class="role-card w-full group flex items-center gap-4 p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card hover:border-brand-400 dark:hover:border-brand-600 transition card-interactive text-left">
               <div class="w-12 h-12 rounded-xl bg-brand-50 dark:bg-brand-950 text-brand-600 dark:text-brand-400 flex items-center justify-center group-hover:scale-105 transition">
                 ${icon('smartphone', 22)}
@@ -1546,6 +1546,30 @@ function renderLogin(root) {
               </div>
               ${icon('chevron-right', 18, 'text-slate-300 group-hover:text-brand-500 transition')}
             </button>
+          </div>
+
+          </div>
+
+          <!-- Staff PIN gate (Reception/Doctor) -->
+          <div id="pin-gate" class="hidden mt-6 animate-slide-up">
+            <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card p-5">
+              <button data-action="back-roles" class="text-sm text-slate-500 hover:text-brand-600 flex items-center gap-1 mb-4">
+                ${icon('arrow-left', 16)} Back
+              </button>
+              <div class="flex items-center gap-1.5 mb-3">
+                <span class="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full border ${branding.chip}">
+                  ${icon('lock', 11)} Staff only
+                </span>
+              </div>
+              <h2 class="font-display font-bold text-lg" id="pin-gate-title">Enter PIN</h2>
+              <p class="text-xs text-slate-500 mt-1 mb-5">Ask your hospital admin for this PIN.</p>
+              <input id="pin-input" type="password" maxlength="4" inputmode="numeric" placeholder="••••"
+                class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm tracking-[0.5em] text-center font-semibold focus:ring-2 ${branding.ring} focus:border-transparent outline-none transition mb-4" />
+              <button id="btn-pin-submit" class="w-full py-3 rounded-xl ${branding.btn} text-white font-semibold text-sm shadow-soft transition active:scale-[0.98] flex items-center justify-center gap-2">
+                <span id="btn-pin-label">Unlock</span>
+              </button>
+              <p id="pin-error" class="text-xs text-rose-500 mt-3 text-center hidden">Incorrect PIN</p>
+            </div>
           </div>
 
           <!-- Patient OTP form (hidden initially) -->
@@ -1640,6 +1664,78 @@ function renderLogin(root) {
     renderLogin(root);
   });
 
+  // ---------- Staff PIN gate ----------
+  function enterStaffRole(role) {
+    if (role === 'reception') {
+      store.loginReception();
+      notifications.toast('Welcome', 'Reception desk ready', 'success');
+      window.location.hash = '#/reception';
+    } else if (role === 'doctor') {
+      store.loginDoctor();
+      notifications.toast('Welcome Doctor', 'Queue control panel active', 'success');
+      window.location.hash = '#/doctor';
+    }
+  }
+
+  function showPinGate(role) {
+    root.querySelector('#role-select')?.classList.add('hidden');
+    root.querySelector('#patient-login')?.classList.add('hidden');
+    const gate = root.querySelector('#pin-gate');
+    gate.classList.remove('hidden');
+    gate.dataset.role = role;
+    root.querySelector('#pin-gate-title').textContent = role === 'doctor' ? 'Enter Doctor PIN' : 'Enter Reception PIN';
+    root.querySelector('#pin-input').value = '';
+    root.querySelector('#pin-error').classList.add('hidden');
+    root.querySelector('#pin-input')?.focus();
+  }
+
+  async function submitPin() {
+    const gate = root.querySelector('#pin-gate');
+    const role = gate.dataset.role;
+    const pin = root.querySelector('#pin-input').value.trim();
+    const label = root.querySelector('#btn-pin-label');
+    const btn = root.querySelector('#btn-pin-submit');
+    const err = root.querySelector('#pin-error');
+    err.classList.add('hidden');
+    if (!pin) return;
+    btn.disabled = true;
+    label.innerHTML = `${icon('loader-2', 16, 'animate-spin')} Checking…`;
+    try {
+      const { data, error } = await sb.rpc('verify_staff_pin', {
+        p_hospital_code: store.getState().hospitalCode,
+        p_role: role,
+        p_pin: pin,
+      });
+      btn.disabled = false;
+      label.textContent = 'Unlock';
+      if (error || !data) {
+        err.classList.remove('hidden');
+        return;
+      }
+      localStorage.setItem(`shq_pin_ok_${role}_${store.getState().hospitalId}`, '1');
+      enterStaffRole(role);
+    } catch (e) {
+      btn.disabled = false;
+      label.textContent = 'Unlock';
+      err.textContent = 'Connection error';
+      err.classList.remove('hidden');
+    }
+  }
+
+  root.querySelector('#btn-pin-submit')?.addEventListener('click', submitPin);
+  root.querySelector('#pin-input')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') submitPin();
+  });
+
+  // If a dedicated reception/doctor link was opened and hospital already resolved, act now
+  if (hasHospital && (PENDING_ROLE === 'reception' || PENDING_ROLE === 'doctor')) {
+    if (isPinUnlocked(PENDING_ROLE)) {
+      enterStaffRole(PENDING_ROLE);
+    } else {
+      showPinGate(PENDING_ROLE);
+    }
+  }
+
   // Role selection
   root.querySelectorAll('[data-role]').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -1648,22 +1744,21 @@ function renderLogin(root) {
         root.querySelector('#role-select').classList.add('hidden');
         root.querySelector('#patient-login').classList.remove('hidden');
         root.querySelector('#phone-input')?.focus();
-      } else if (role === 'reception') {
-        store.loginReception();
-        notifications.toast('Welcome', 'Reception desk ready', 'success');
-        window.location.hash = '#/reception';
-      } else if (role === 'doctor') {
-        store.loginDoctor();
-        notifications.toast('Welcome Doctor', 'Queue control panel active', 'success');
-        window.location.hash = '#/doctor';
+      } else if (role === 'reception' || role === 'doctor') {
+        if (isPinUnlocked(role)) {
+          enterStaffRole(role);
+        } else {
+          showPinGate(role);
+        }
       }
     });
   });
 
-  root.querySelector('[data-action="back-roles"]')?.addEventListener('click', () => {
-    root.querySelector('#patient-login').classList.add('hidden');
-    root.querySelector('#role-select').classList.remove('hidden');
-  });
+  root.querySelectorAll('[data-action="back-roles"]').forEach(b => b.addEventListener('click', () => {
+    root.querySelector('#patient-login')?.classList.add('hidden');
+    root.querySelector('#pin-gate')?.classList.add('hidden');
+    root.querySelector('#role-select')?.classList.remove('hidden');
+  }));
 
   root.querySelector('#btn-patient-login')?.addEventListener('click', () => {
     const phone = root.querySelector('#phone-input').value;
@@ -2097,6 +2192,10 @@ let doctor_doctor_unsub = null;
 
 const ADMIN_PASSCODE = 'myqueue2026'; // change this to your own secret
 
+function generatePin() {
+  return String(Math.floor(1000 + Math.random() * 9000));
+}
+
 function slugify(name) {
   const base = name.toLowerCase().trim()
     .replace(/[^a-z0-9]+/g, '-')
@@ -2131,6 +2230,8 @@ function renderAdmin(root) {
             <div id="ah-result" class="hidden mt-4 p-4 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800">
               <p class="text-xs text-emerald-700 dark:text-emerald-300 font-semibold mb-1">Hospital created!</p>
               <p class="text-sm font-mono" id="ah-result-code"></p>
+              <p class="text-sm font-mono font-bold mt-1" id="ah-result-pins"></p>
+              <p class="text-[11px] text-rose-500 mt-1">⚠️ Save the PINs now — they won't be shown again.</p>
               <p class="text-[11px] text-slate-500 mt-2">Share this code with reception/doctor. Patient link:</p>
               <p class="text-[11px] font-mono break-all mt-1" id="ah-result-link"></p>
             </div>
@@ -2168,7 +2269,7 @@ function renderAdmin(root) {
   async function loadList() {
     const listEl = root.querySelector('#ah-list');
     listEl.innerHTML = '<p class="text-xs text-slate-400">Loading…</p>';
-    const { data, error } = await sb.from('hospitals').select('*').order('created_at', { ascending: false });
+    const { data, error } = await sb.from('hospitals').select('id,name,code,address,phone,created_at').order('created_at', { ascending: false });
     if (error || !data) {
       listEl.innerHTML = '<p class="text-xs text-rose-500">Could not load hospitals.</p>';
       return;
@@ -2205,7 +2306,12 @@ function renderAdmin(root) {
     btn.disabled = true;
     btn.textContent = 'Creating…';
     const code = slugify(name);
-    const { data, error } = await sb.from('hospitals').insert({ name, code, address, phone }).select().single();
+    const receptionPin = generatePin();
+    const doctorPin = generatePin();
+    const { data, error } = await sb.from('hospitals')
+      .insert({ name, code, address, phone, reception_pin: receptionPin, doctor_pin: doctorPin })
+      .select('id,name,code,address,phone,created_at')
+      .single();
     btn.disabled = false;
     btn.textContent = 'Create Hospital';
 
@@ -2220,6 +2326,7 @@ function renderAdmin(root) {
     root.querySelector('#ah-phone').value = '';
     root.querySelector('#ah-result').classList.remove('hidden');
     root.querySelector('#ah-result-code').textContent = 'Code: ' + data.code;
+    root.querySelector('#ah-result-pins').textContent = `Reception PIN: ${receptionPin}  ·  Doctor PIN: ${doctorPin}`;
     root.querySelector('#ah-result-link').textContent = window.location.origin + window.location.pathname + '#/?h=' + data.code;
     loadList();
   });
@@ -2497,14 +2604,18 @@ function hideSplash() {
 
 let PENDING_ROLE = null;
 
+function isPinUnlocked(role) {
+  return localStorage.getItem(`shq_pin_ok_${role}_${store.getState().hospitalId}`) === '1';
+}
+
 function autoEnterRole() {
   if (!store.getState().hospitalId) return false;
-  if (PENDING_ROLE === 'reception') {
+  if (PENDING_ROLE === 'reception' && isPinUnlocked('reception')) {
     store.loginReception();
     window.location.hash = '#/reception';
     return true;
   }
-  if (PENDING_ROLE === 'doctor') {
+  if (PENDING_ROLE === 'doctor' && isPinUnlocked('doctor')) {
     store.loginDoctor();
     window.location.hash = '#/doctor';
     return true;
