@@ -510,24 +510,11 @@ function createInitialState() {
     hospitalId: null,
     hospitalCode: null,
     hospitalName: null,
-    doctorStatusId: null,
-    // Single doctor per hospital for V1 — architecture supports multi-doctor later
-    doctor: {
-      id: null,
-      name: 'Doctor',
-      specialty: 'General Physician',
-      avgConsultMin: DEFAULT_AVG_CONSULT,
-      status: 'available', // available | consulting | paused | break | emergency_pause | finished
-      currentPatientId: null,
-      consultStartedAt: null,
-      totalSeenToday: 0,
-      pauseReason: null,
-    },
-    // Token counter for the day
-    nextToken: 1,
+    // Multiple doctors per hospital — each has its own queue, status, token counter
+    doctors: [], // array of { id, name, specialty, avgConsultMin, status, currentPatientId, consultStartedAt, totalSeenToday, pauseReason, doctorStatusId, nextToken }
     // All patients for today (and history)
     patients: [],
-    // Active queue order (patient ids in sequence)
+    // Active queue order (patient ids in sequence, across all doctors — reception overview)
     queue: [], // array of patient ids that are waiting or consulting
     // Notifications log (for patient history of alerts)
     notifications: [],
@@ -663,66 +650,60 @@ class Store {
     this.state.hospitalPhone = hospital.phone || '';
     this.state.hospitalAddress = hospital.address || '';
 
-    // Ensure a doctor staff row exists for this hospital (V1: single doctor)
-    let { data: staffRow } = await sb
+    const today = todayKey();
+
+    // Load all doctors for this hospital (Reception adds them via "Add Doctor" —
+    // a fresh hospital simply starts with zero doctors, no placeholder created)
+    let { data: staffRows } = await sb
       .from('staff')
       .select('*')
       .eq('hospital_id', hospital.id)
       .eq('role', 'doctor')
-      .limit(1)
-      .maybeSingle();
+      .order('created_at', { ascending: true });
 
-    if (!staffRow) {
-      const { data: inserted } = await sb
-        .from('staff')
-        .insert({
-          hospital_id: hospital.id,
-          role: 'doctor',
-          name: 'Doctor',
-          specialty: 'General Physician',
-          avg_consult_min: DEFAULT_AVG_CONSULT,
-        })
-        .select()
-        .single();
-      staffRow = inserted;
-    }
+    staffRows = staffRows || [];
 
-    this.state.doctor.id = staffRow.id;
-    this.state.doctor.name = staffRow.name;
-    this.state.doctor.specialty = staffRow.specialty;
-    this.state.doctor.avgConsultMin = staffRow.avg_consult_min || DEFAULT_AVG_CONSULT;
-
-    // Ensure today's doctor_status row exists
-    const today = todayKey();
-    let { data: statusRow } = await sb
-      .from('doctor_status')
-      .select('*')
-      .eq('staff_id', staffRow.id)
-      .eq('day', today)
-      .maybeSingle();
-
-    if (!statusRow) {
-      const { data: inserted } = await sb
+    const doctorStatusRows = await Promise.all(staffRows.map(async (staffRow) => {
+      let { data: statusRow } = await sb
         .from('doctor_status')
-        .insert({
-          hospital_id: hospital.id,
-          staff_id: staffRow.id,
-          day: today,
-          status: 'available',
-          next_token: 1,
-        })
-        .select()
-        .single();
-      statusRow = inserted;
-    }
+        .select('*')
+        .eq('staff_id', staffRow.id)
+        .eq('day', today)
+        .maybeSingle();
+      if (!statusRow) {
+        const { data: inserted } = await sb
+          .from('doctor_status')
+          .insert({
+            hospital_id: hospital.id,
+            staff_id: staffRow.id,
+            day: today,
+            status: 'available',
+            next_token: 1,
+          })
+          .select()
+          .single();
+        statusRow = inserted;
+      }
+      return statusRow;
+    }));
 
-    this.state.doctorStatusId = statusRow.id;
-    this.state.doctor.status = statusRow.status;
-    this.state.doctor.currentPatientId = statusRow.current_patient_id;
-    this.state.doctor.consultStartedAt = statusRow.consult_started_at;
-    this.state.doctor.totalSeenToday = statusRow.total_seen_today || 0;
-    this.state.doctor.pauseReason = statusRow.pause_reason;
-    this.state.nextToken = statusRow.next_token || 1;
+    this.state.doctors = staffRows.map((staffRow, i) => {
+      const statusRow = doctorStatusRows[i] || {};
+      return {
+        id: staffRow.id,
+        name: staffRow.name,
+        specialty: staffRow.specialty || 'General Physician',
+        avgConsultMin: staffRow.avg_consult_min || DEFAULT_AVG_CONSULT,
+        doctorStatusId: statusRow.id,
+        status: statusRow.status || 'available',
+        currentPatientId: statusRow.current_patient_id || null,
+        consultStartedAt: statusRow.consult_started_at || null,
+        totalSeenToday: statusRow.total_seen_today || 0,
+        pauseReason: statusRow.pause_reason || null,
+        nextToken: statusRow.next_token || 1,
+      };
+    });
+
     this.state.day = today;
 
     // Load today's patients
@@ -734,13 +715,65 @@ class Store {
       .order('created_at', { ascending: true });
 
     this.state.patients = (patientRows || []).map(mapPatientRow);
-    const maxToken = this.state.patients.reduce((m, p) => Math.max(m, p.token), 0);
-    this.state.nextToken = Math.max(this.state.nextToken, maxToken + 1);
+
+    // Reconcile each doctor's next token with actual max token issued (safety net)
+    this.state.doctors.forEach(doc => {
+      const maxToken = this.state.patients
+        .filter(p => p.doctorId === doc.id)
+        .reduce((m, p) => Math.max(m, p.token), 0);
+      doc.nextToken = Math.max(doc.nextToken, maxToken + 1);
+    });
+
     this._recomputeQueue();
 
     this._subscribeRealtime();
     this.ready = true;
     this.notify();
+  }
+
+  getDoctor(id) {
+    return this.state.doctors.find(d => d.id === id) || null;
+  }
+
+  async addDoctor(name, specialty) {
+    const today = todayKey();
+    try {
+      const { data: staffRow, error } = await sb.from('staff').insert({
+        hospital_id: this.state.hospitalId,
+        role: 'doctor',
+        name: name.trim(),
+        specialty: (specialty || 'General Physician').trim(),
+        avg_consult_min: DEFAULT_AVG_CONSULT,
+      }).select().single();
+      if (error || !staffRow) throw error || new Error('Insert failed');
+
+      const { data: statusRow } = await sb.from('doctor_status').insert({
+        hospital_id: this.state.hospitalId,
+        staff_id: staffRow.id,
+        day: today,
+        status: 'available',
+        next_token: 1,
+      }).select().single();
+
+      this.state.doctors.push({
+        id: staffRow.id,
+        name: staffRow.name,
+        specialty: staffRow.specialty,
+        avgConsultMin: staffRow.avg_consult_min,
+        doctorStatusId: statusRow.id,
+        status: 'available',
+        currentPatientId: null,
+        consultStartedAt: null,
+        totalSeenToday: 0,
+        pauseReason: null,
+        nextToken: 1,
+      });
+      this.notify();
+      return { ok: true, doctor: this.getDoctor(staffRow.id) };
+    } catch (e) {
+      console.error(e);
+      return { ok: false, error: e.message || 'Could not add doctor' };
+    }
   }
 
   _subscribeRealtime() {
@@ -774,19 +807,21 @@ class Store {
 
   _handleDoctorStatusChange(payload) {
     const r = payload.new;
-    if (!r || r.id !== this.state.doctorStatusId) return;
-    const prevStatus = this.state.doctor.status;
-    this.state.doctor.status = r.status;
-    this.state.doctor.currentPatientId = r.current_patient_id;
-    this.state.doctor.consultStartedAt = r.consult_started_at;
-    this.state.doctor.totalSeenToday = r.total_seen_today;
-    this.state.doctor.pauseReason = r.pause_reason;
-    this.state.nextToken = r.next_token;
+    if (!r) return;
+    const doc = this.state.doctors.find(d => d.doctorStatusId === r.id);
+    if (!doc) return;
+    const prevStatus = doc.status;
+    doc.status = r.status;
+    doc.currentPatientId = r.current_patient_id;
+    doc.consultStartedAt = r.consult_started_at;
+    doc.totalSeenToday = r.total_seen_today;
+    doc.pauseReason = r.pause_reason;
+    doc.nextToken = r.next_token;
     if (prevStatus !== r.status && ['paused', 'break', 'emergency_pause'].includes(r.status)) {
-      bus.emit('doctor:pause', { reason: r.pause_reason });
+      bus.emit('doctor:pause', { reason: r.pause_reason, doctorId: doc.id });
     }
     if (prevStatus !== r.status && r.status === 'available' && ['paused', 'break', 'emergency_pause'].includes(prevStatus)) {
-      bus.emit('doctor:resume');
+      bus.emit('doctor:resume', { doctorId: doc.id });
     }
     this.notify();
   }
@@ -841,16 +876,18 @@ class Store {
     }
   }
 
-  async _pushDoctorStatus() {
+  async _pushDoctorStatus(doctorId) {
+    const doc = this.getDoctor(doctorId);
+    if (!doc) return;
     try {
       const { error } = await sb.from('doctor_status').update({
-        status: this.state.doctor.status,
-        current_patient_id: this.state.doctor.currentPatientId,
-        consult_started_at: this.state.doctor.consultStartedAt,
-        total_seen_today: this.state.doctor.totalSeenToday,
-        pause_reason: this.state.doctor.pauseReason,
-        next_token: this.state.nextToken,
-      }).eq('id', this.state.doctorStatusId);
+        status: doc.status,
+        current_patient_id: doc.currentPatientId,
+        consult_started_at: doc.consultStartedAt,
+        total_seen_today: doc.totalSeenToday,
+        pause_reason: doc.pauseReason,
+        next_token: doc.nextToken,
+      }).eq('id', doc.doctorStatusId);
       if (error) throw error;
     } catch (e) {
       console.error(e);
@@ -858,9 +895,11 @@ class Store {
     }
   }
 
-  async _pushStaffAvg() {
+  async _pushStaffAvg(doctorId) {
+    const doc = this.getDoctor(doctorId);
+    if (!doc) return;
     try {
-      await sb.from('staff').update({ avg_consult_min: this.state.doctor.avgConsultMin }).eq('id', this.state.doctor.id);
+      await sb.from('staff').update({ avg_consult_min: doc.avgConsultMin }).eq('id', doc.id);
     } catch (e) { console.error(e); }
   }
 
@@ -882,8 +921,9 @@ class Store {
     return { ok: true };
   }
 
-  loginDoctor() {
-    this.state.sessions.doctor = { doctorId: this.state.doctor.id };
+  loginDoctor(doctorId) {
+    if (!this.getDoctor(doctorId)) return { ok: false, error: 'Doctor not found' };
+    this.state.sessions.doctor = { doctorId };
     this.notify();
     return { ok: true };
   }
@@ -896,9 +936,11 @@ class Store {
   }
 
   // ---------- Patient registration & tokens ----------
-  registerWalkIn({ name, phone, isEmergency = false, notes = '' }) {
+  registerWalkIn({ name, phone, isEmergency = false, notes = '', doctorId }) {
+    const doc = this.getDoctor(doctorId);
+    if (!doc) throw new Error('A doctor must be selected to register a patient');
     const cleanPhone = String(phone).replace(/\D/g, '').slice(-10);
-    const token = this.state.nextToken++;
+    const token = doc.nextToken++;
     const patient = {
       id: (crypto.randomUUID ? crypto.randomUUID() : uid('pt-')),
       day: this.state.day,
@@ -912,7 +954,7 @@ class Store {
       createdAt: new Date().toISOString(),
       consultStartedAt: null,
       consultEndedAt: null,
-      doctorId: this.state.doctor.id,
+      doctorId: doc.id,
     };
     this.state.patients.push(patient);
     this._recomputeQueue();
@@ -920,13 +962,13 @@ class Store {
     this.notify();
     bus.emit('patient:registered', patient);
     this._pushPatientInsert(patient);
-    this._pushDoctorStatus(); // persists updated next_token
+    this._pushDoctorStatus(doc.id); // persists updated next_token
     return patient;
   }
 
-  bookAppointment({ name, phone, preferredTime }) {
+  bookAppointment({ name, phone, preferredTime, doctorId }) {
     // For V1 same as walk-in but tagged
-    const p = this.registerWalkIn({ name, phone, isEmergency: false, notes: preferredTime ? `Preferred: ${preferredTime}` : '' });
+    const p = this.registerWalkIn({ name, phone, isEmergency: false, notes: preferredTime ? `Preferred: ${preferredTime}` : '', doctorId });
     p.isAppointment = true;
     this.notify();
     return p;
@@ -961,41 +1003,42 @@ class Store {
   setPatientStatus(patientId, status) {
     const p = this.getPatient(patientId);
     if (!p) return false;
+    const doc = this.getDoctor(p.doctorId);
     const prev = p.status;
     p.status = status;
     let avgChanged = false;
 
-    if (status === 'consulting') {
+    if (status === 'consulting' && doc) {
       p.consultStartedAt = new Date().toISOString();
-      this.state.doctor.status = 'consulting';
-      this.state.doctor.currentPatientId = patientId;
-      this.state.doctor.consultStartedAt = p.consultStartedAt;
+      doc.status = 'consulting';
+      doc.currentPatientId = patientId;
+      doc.consultStartedAt = p.consultStartedAt;
     }
 
-    if (status === 'completed') {
+    if (status === 'completed' && doc) {
       p.consultEndedAt = new Date().toISOString();
-      this.state.doctor.totalSeenToday += 1;
+      doc.totalSeenToday += 1;
       // Update running average (simple EMA)
       if (p.consultStartedAt) {
         const duration = Math.max(3, Math.round((new Date(p.consultEndedAt) - new Date(p.consultStartedAt)) / 60000));
         const alpha = 0.3;
-        this.state.doctor.avgConsultMin = Math.round(
-          alpha * duration + (1 - alpha) * this.state.doctor.avgConsultMin
+        doc.avgConsultMin = Math.round(
+          alpha * duration + (1 - alpha) * doc.avgConsultMin
         );
         avgChanged = true;
       }
-      this.state.doctor.currentPatientId = null;
-      this.state.doctor.consultStartedAt = null;
-      if (this.state.doctor.status === 'consulting') {
-        this.state.doctor.status = 'available';
+      doc.currentPatientId = null;
+      doc.consultStartedAt = null;
+      if (doc.status === 'consulting') {
+        doc.status = 'available';
       }
     }
 
-    if (status === 'no_show' || status === 'cancelled') {
-      if (this.state.doctor.currentPatientId === patientId) {
-        this.state.doctor.currentPatientId = null;
-        this.state.doctor.consultStartedAt = null;
-        this.state.doctor.status = 'available';
+    if ((status === 'no_show' || status === 'cancelled') && doc) {
+      if (doc.currentPatientId === patientId) {
+        doc.currentPatientId = null;
+        doc.consultStartedAt = null;
+        doc.status = 'available';
       }
     }
 
@@ -1003,77 +1046,90 @@ class Store {
     this.notify();
     bus.emit('patient:status', { patient: p, prev });
     this._pushPatientUpdate(p);
-    this._pushDoctorStatus();
-    if (avgChanged) this._pushStaffAvg();
+    if (doc) {
+      this._pushDoctorStatus(doc.id);
+      if (avgChanged) this._pushStaffAvg(doc.id);
+    }
     return true;
   }
 
   // ---------- Doctor controls ----------
-  doctorStartConsultation() {
-    // Start the first waiting patient
+  doctorStartConsultation(doctorId) {
+    // Start the first waiting patient for this doctor
     const nextId = this.state.queue.find(id => {
       const p = this.getPatient(id);
-      return p && p.status === 'waiting';
+      return p && p.status === 'waiting' && p.doctorId === doctorId;
     });
     if (!nextId) return { ok: false, error: 'No patients waiting' };
     this.setPatientStatus(nextId, 'consulting');
     return { ok: true, patient: this.getPatient(nextId) };
   }
 
-  doctorNextPatient() {
+  doctorNextPatient(doctorId) {
     // Complete current if consulting, then start next
-    if (this.state.doctor.currentPatientId) {
-      this.setPatientStatus(this.state.doctor.currentPatientId, 'completed');
+    const doc = this.getDoctor(doctorId);
+    if (doc && doc.currentPatientId) {
+      this.setPatientStatus(doc.currentPatientId, 'completed');
     }
-    return this.doctorStartConsultation();
+    return this.doctorStartConsultation(doctorId);
   }
 
-  doctorPause(reason = 'paused') {
-    this.state.doctor.status = reason === 'break' ? 'break' : reason === 'emergency' ? 'emergency_pause' : 'paused';
-    this.state.doctor.pauseReason = reason;
+  doctorPause(doctorId, reason = 'paused') {
+    const doc = this.getDoctor(doctorId);
+    if (!doc) return;
+    doc.status = reason === 'break' ? 'break' : reason === 'emergency' ? 'emergency_pause' : 'paused';
+    doc.pauseReason = reason;
     this.notify();
-    bus.emit('doctor:pause', { reason });
-    this._pushDoctorStatus();
+    bus.emit('doctor:pause', { reason, doctorId });
+    this._pushDoctorStatus(doctorId);
   }
 
-  doctorResume() {
-    this.state.doctor.status = this.state.doctor.currentPatientId ? 'consulting' : 'available';
-    this.state.doctor.pauseReason = null;
+  doctorResume(doctorId) {
+    const doc = this.getDoctor(doctorId);
+    if (!doc) return;
+    doc.status = doc.currentPatientId ? 'consulting' : 'available';
+    doc.pauseReason = null;
     this.notify();
-    bus.emit('doctor:resume');
-    this._pushDoctorStatus();
+    bus.emit('doctor:resume', { doctorId });
+    this._pushDoctorStatus(doctorId);
   }
 
-  doctorFinishDay() {
-    this.state.doctor.status = 'finished';
-    // Mark remaining waiting as cancelled for the day
+  doctorFinishDay(doctorId) {
+    const doc = this.getDoctor(doctorId);
+    if (!doc) return;
+    doc.status = 'finished';
+    // Mark this doctor's remaining waiting patients as cancelled for the day
     const toCancel = [];
-    this.state.queue.forEach(id => {
-      const p = this.getPatient(id);
-      if (p && p.status === 'waiting') { p.status = 'cancelled'; toCancel.push(p); }
+    this.state.patients.forEach(p => {
+      if (p.doctorId === doctorId && p.day === this.state.day && p.status === 'waiting') {
+        p.status = 'cancelled';
+        toCancel.push(p);
+      }
     });
-    this.state.doctor.currentPatientId = null;
+    doc.currentPatientId = null;
     this._recomputeQueue();
     this.notify();
-    this._pushDoctorStatus();
+    this._pushDoctorStatus(doctorId);
     toCancel.forEach(p => this._pushPatientUpdate(p));
   }
 
   // ---------- Derived helpers ----------
-  getActiveQueue() {
-    return this.state.queue
+  getActiveQueue(doctorId) {
+    const list = this.state.queue
       .map(id => this.getPatient(id))
       .filter(Boolean)
       .filter(p => p.status === 'waiting' || p.status === 'consulting');
+    return doctorId ? list.filter(p => p.doctorId === doctorId) : list;
   }
 
-  getWaitingPatients() {
-    return this.getActiveQueue().filter(p => p.status === 'waiting');
+  getWaitingPatients(doctorId) {
+    return this.getActiveQueue(doctorId).filter(p => p.status === 'waiting');
   }
 
-  getCurrentPatient() {
-    if (!this.state.doctor.currentPatientId) return null;
-    return this.getPatient(this.state.doctor.currentPatientId);
+  getCurrentPatient(doctorId) {
+    const doc = this.getDoctor(doctorId);
+    if (!doc || !doc.currentPatientId) return null;
+    return this.getPatient(doc.currentPatientId);
   }
 
   searchPatients(query) {
@@ -1097,6 +1153,7 @@ class Store {
   // Seed demo data if empty
   seedDemoIfEmpty() {
     if (this.state.patients.some(p => p.day === this.state.day)) return;
+    if (!this.state.doctors.length) return;
     const names = [
       { name: 'Rahul Mehta', phone: '9876543210' },
       { name: 'Priya Nair', phone: '9876543211' },
@@ -1112,6 +1169,7 @@ class Store {
         name: n.name,
         phone: n.phone,
         isEmergency: i === 2, // one emergency for demo
+        doctorId: this.state.doctors[i % this.state.doctors.length].id,
       });
     });
   }
@@ -1149,7 +1207,7 @@ const ENGINE_TICK_MS = 15000; // recompute every 15s
 class QueueEngine {
   constructor() {
     this._timer = null;
-    this._lastSnapshot = null;
+    this._snapshots = {}; // doctorId -> snapshot
   }
 
   start() {
@@ -1164,131 +1222,124 @@ class QueueEngine {
   }
 
   /**
-   * Core ETA calculation
-   * Returns enriched view of the queue for UI
+   * Core ETA calculation — computed once per doctor
    */
   recompute() {
     const state = store.getState();
-    const doctor = state.doctor;
-    const avg = Math.max(4, doctor.avgConsultMin || 10);
-    const active = store.getActiveQueue();
-
-    // Determine if doctor is effectively delayed / paused
-    const isPaused = ['paused', 'break', 'emergency_pause'].includes(doctor.status);
-    const isFinished = doctor.status === 'finished';
-
-    let cumulativeMin = 0;
     const now = new Date();
 
-    // If currently consulting, estimate remaining time for current patient
-    let remainingCurrent = 0;
-    if (doctor.status === 'consulting' && doctor.consultStartedAt) {
-      const elapsed = Math.round((now - new Date(doctor.consultStartedAt)) / 60000);
-      remainingCurrent = Math.max(1, avg - elapsed);
-      // Cap so we don't go negative forever
-      remainingCurrent = Math.min(remainingCurrent, avg);
-    }
+    state.doctors.forEach(doctor => {
+      const avg = Math.max(4, doctor.avgConsultMin || 10);
+      const active = store.getActiveQueue(doctor.id);
 
-    const enriched = active.map((patient, index) => {
-      let patientsAhead = 0;
-      let estimatedStart = null;
-      let estimatedEnd = null;
-      let recommendedArrival = null;
-      let waitMinutes = 0;
+      const isPaused = ['paused', 'break', 'emergency_pause'].includes(doctor.status);
+      const isFinished = doctor.status === 'finished';
 
-      if (isFinished) {
-        return {
-          ...patient,
-          patientsAhead: 0,
-          estimatedStart: null,
-          estimatedEnd: null,
-          recommendedArrival: null,
-          waitMinutes: 0,
-          isCurrent: false,
-        };
+      let remainingCurrent = 0;
+      if (doctor.status === 'consulting' && doctor.consultStartedAt) {
+        const elapsed = Math.round((now - new Date(doctor.consultStartedAt)) / 60000);
+        remainingCurrent = Math.max(1, avg - elapsed);
+        remainingCurrent = Math.min(remainingCurrent, avg);
       }
 
-      if (patient.status === 'consulting') {
-        patientsAhead = 0;
-        estimatedStart = doctor.consultStartedAt ? new Date(doctor.consultStartedAt) : now;
-        estimatedEnd = addMinutes(now, remainingCurrent);
-        waitMinutes = 0;
-      } else {
-        // Count how many waiting/consulting before this patient
-        patientsAhead = active
-          .slice(0, index)
-          .filter(p => p.status === 'waiting' || p.status === 'consulting').length;
+      const enriched = active.map((patient, index) => {
+        let patientsAhead = 0;
+        let estimatedStart = null;
+        let estimatedEnd = null;
+        let recommendedArrival = null;
+        let waitMinutes = 0;
 
-        // Time until this patient starts
-        let minutesUntil = remainingCurrent;
-        // Add full avg for each waiting patient before us (excluding current)
-        const waitingBefore = active
-          .slice(0, index)
-          .filter(p => p.status === 'waiting').length;
-        minutesUntil += waitingBefore * avg;
-
-        // If paused, add a soft buffer (don't over-promise)
-        if (isPaused) {
-          minutesUntil += 8; // buffer while paused
+        if (isFinished) {
+          return {
+            ...patient,
+            patientsAhead: 0, estimatedStart: null, estimatedEnd: null,
+            recommendedArrival: null, waitMinutes: 0, isCurrent: false,
+          };
         }
 
-        waitMinutes = Math.max(0, Math.round(minutesUntil));
-        estimatedStart = addMinutes(now, waitMinutes);
-        estimatedEnd = addMinutes(estimatedStart, avg);
-        recommendedArrival = addMinutes(estimatedStart, -state.settings.recommendArriveEarlyMin);
-      }
+        if (patient.status === 'consulting') {
+          patientsAhead = 0;
+          estimatedStart = doctor.consultStartedAt ? new Date(doctor.consultStartedAt) : now;
+          estimatedEnd = addMinutes(now, remainingCurrent);
+          waitMinutes = 0;
+        } else {
+          patientsAhead = active.slice(0, index).filter(p => p.status === 'waiting' || p.status === 'consulting').length;
+          let minutesUntil = remainingCurrent;
+          const waitingBefore = active.slice(0, index).filter(p => p.status === 'waiting').length;
+          minutesUntil += waitingBefore * avg;
+          if (isPaused) minutesUntil += 8;
+          waitMinutes = Math.max(0, Math.round(minutesUntil));
+          estimatedStart = addMinutes(now, waitMinutes);
+          estimatedEnd = addMinutes(estimatedStart, avg);
+          recommendedArrival = addMinutes(estimatedStart, -state.settings.recommendArriveEarlyMin);
+        }
 
-      // Persist estimate on patient for history
-      if (patient.estimatedStart !== (estimatedStart ? estimatedStart.toISOString() : null)) {
-        patient.estimatedStart = estimatedStart ? estimatedStart.toISOString() : null;
-      }
+        if (patient.estimatedStart !== (estimatedStart ? estimatedStart.toISOString() : null)) {
+          patient.estimatedStart = estimatedStart ? estimatedStart.toISOString() : null;
+        }
 
-      return {
-        ...patient,
-        patientsAhead,
-        estimatedStart,
-        estimatedEnd,
-        recommendedArrival,
-        waitMinutes,
-        isCurrent: patient.status === 'consulting',
+        return {
+          ...patient, patientsAhead, estimatedStart, estimatedEnd, recommendedArrival, waitMinutes,
+          isCurrent: patient.status === 'consulting',
+        };
+      });
+
+      const current = enriched.find(p => p.status === 'consulting') || enriched.find(p => p.status === 'waiting');
+      const currentToken = current ? current.token : null;
+      const upcoming = enriched.filter(p => p.status === 'waiting').slice(0, 5);
+
+      this._snapshots[doctor.id] = {
+        doctorId: doctor.id,
+        doctorName: doctor.name,
+        doctorSpecialty: doctor.specialty,
+        currentToken,
+        doctorStatus: doctor.status,
+        isPaused, isFinished,
+        avgConsultMin: avg,
+        totalSeen: doctor.totalSeenToday,
+        totalWaiting: enriched.filter(p => p.status === 'waiting').length,
+        totalInQueue: enriched.length,
+        queue: enriched,
+        upcoming,
+        updatedAt: now.toISOString(),
       };
     });
 
-    // Current token (the one being consulted or next)
-    const current = enriched.find(p => p.status === 'consulting') || enriched.find(p => p.status === 'waiting');
-    const currentToken = current ? current.token : null;
-    const upcoming = enriched.filter(p => p.status === 'waiting').slice(0, 5);
-
-    this._lastSnapshot = {
-      currentToken,
-      doctorStatus: doctor.status,
-      isPaused,
-      isFinished,
-      avgConsultMin: avg,
-      totalSeen: doctor.totalSeenToday,
-      totalWaiting: enriched.filter(p => p.status === 'waiting').length,
-      totalInQueue: enriched.length,
-      queue: enriched,
-      upcoming,
-      updatedAt: now.toISOString(),
-    };
-
-    bus.emit('queue:updated', this._lastSnapshot);
-    return this._lastSnapshot;
+    bus.emit('queue:updated', this._snapshots);
+    return this._snapshots;
   }
 
-  getSnapshot() {
-    return this._lastSnapshot || this.recompute();
+  getSnapshot(doctorId) {
+    if (!this._snapshots[doctorId]) this.recompute();
+    return this._snapshots[doctorId] || {
+      doctorId: null, currentToken: null, doctorStatus: 'available', isPaused: false, isFinished: false,
+      avgConsultMin: DEFAULT_AVG_CONSULT, totalSeen: 0, totalWaiting: 0, totalInQueue: 0, queue: [], upcoming: [],
+    };
+  }
+
+  // Aggregate snapshot across ALL doctors — used by Reception's overview cards
+  getOverview() {
+    const state = store.getState();
+    let totalInQueue = 0, totalWaiting = 0, totalSeen = 0, nextTokenSum = 0;
+    state.doctors.forEach(doc => {
+      const snap = this.getSnapshot(doc.id);
+      totalInQueue += snap.totalInQueue;
+      totalWaiting += snap.totalWaiting;
+      totalSeen += snap.totalSeen;
+      nextTokenSum += doc.nextToken;
+    });
+    return { totalInQueue, totalWaiting, totalSeen, doctorCount: state.doctors.length };
   }
 
   /**
-   * Get ETA info for a specific patient (by id or token)
+   * Get ETA info for a specific patient (by id or token) — looks up the
+   * patient's assigned doctor to find them within that doctor's queue.
    */
   getEtaForPatient(patientIdOrToken) {
-    const snap = this.getSnapshot();
-    const item = snap.queue.find(
-      p => p.id === patientIdOrToken || p.token === Number(patientIdOrToken)
-    );
+    const patient = store.getPatient(patientIdOrToken) || store.getPatientByToken(patientIdOrToken);
+    if (!patient) return null;
+    const snap = this.getSnapshot(patient.doctorId);
+    const item = snap.queue.find(p => p.id === patient.id);
     if (!item) return null;
 
     return {
@@ -1310,8 +1361,8 @@ class QueueEngine {
   /**
    * Human readable delay message
    */
-  getDelayMessage() {
-    const snap = this.getSnapshot();
+  getDelayMessage(doctorId) {
+    const snap = this.getSnapshot(doctorId);
     if (snap.isFinished) return 'Clinic closed for today';
     if (snap.doctorStatus === 'break') return 'Doctor is on a short break';
     if (snap.doctorStatus === 'emergency_pause') return 'Emergency — queue temporarily paused';
@@ -1799,6 +1850,18 @@ function renderLogin(root) {
             </div>
           </div>
 
+          <!-- Doctor selection (multi-doctor hospitals) -->
+          <div id="doctor-select-gate" class="hidden mt-6 animate-slide-up">
+            <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card p-5">
+              <button data-action="back-roles" class="text-sm text-slate-500 hover:text-brand-600 flex items-center gap-1 mb-4">
+                ${icon('arrow-left', 16)} Back
+              </button>
+              <h2 class="font-display font-bold text-lg mb-1">Which doctor are you?</h2>
+              <p class="text-xs text-slate-500 mb-4">Select your name to open your queue.</p>
+              <div id="doctor-select-list" class="space-y-2"></div>
+            </div>
+          </div>
+
           <!-- Patient OTP form (hidden initially) -->
           <div id="patient-login" class="${hasHospital && PENDING_ROLE === 'patient' ? '' : 'hidden'} mt-6 animate-slide-up">
             <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card p-5">
@@ -1906,15 +1969,54 @@ function renderLogin(root) {
       notifications.toast('Welcome', 'Reception desk ready', 'success');
       window.location.hash = '#/reception';
     } else if (role === 'doctor') {
-      store.loginDoctor();
-      notifications.toast('Welcome Doctor', 'Queue control panel active', 'success');
-      window.location.hash = '#/doctor';
+      const doctors = store.getState().doctors;
+      if (doctors.length === 1) {
+        enterAsDoctor(doctors[0].id);
+      } else if (doctors.length > 1) {
+        showDoctorSelectGate();
+      } else {
+        notifications.toast('No doctors yet', 'Ask reception to add a doctor first', 'warning');
+      }
     }
+  }
+
+  function enterAsDoctor(doctorId) {
+    const res = store.loginDoctor(doctorId);
+    if (!res.ok) {
+      notifications.toast('Error', res.error, 'error');
+      return;
+    }
+    localStorage.setItem(`shq_last_doctor_${store.getState().hospitalId}`, doctorId);
+    notifications.toast('Welcome Doctor', 'Queue control panel active', 'success');
+    window.location.hash = '#/doctor';
+  }
+
+  function showDoctorSelectGate() {
+    root.querySelector('#role-select')?.classList.add('hidden');
+    root.querySelector('#pin-gate')?.classList.add('hidden');
+    root.querySelector('#doctor-select-gate')?.classList.remove('hidden');
+    const list = root.querySelector('#doctor-select-list');
+    const doctors = store.getState().doctors;
+    list.innerHTML = doctors.map(d => `
+      <button data-select-doctor="${d.id}" class="w-full flex items-center gap-3 p-3 rounded-xl border border-slate-200 dark:border-slate-800 hover:border-violet-400 transition text-left">
+        <div class="w-10 h-10 rounded-xl bg-violet-50 dark:bg-violet-950 text-violet-600 dark:text-violet-400 flex items-center justify-center shrink-0">
+          ${icon('stethoscope', 18)}
+        </div>
+        <div class="min-w-0">
+          <p class="font-semibold text-sm truncate">${escapeHtml(d.name)}</p>
+          <p class="text-xs text-slate-500 truncate">${escapeHtml(d.specialty)}</p>
+        </div>
+      </button>
+    `).join('');
+    list.querySelectorAll('[data-select-doctor]').forEach(btn => {
+      btn.addEventListener('click', () => enterAsDoctor(btn.dataset.selectDoctor));
+    });
   }
 
   function showPinGate(role) {
     root.querySelector('#role-select')?.classList.add('hidden');
     root.querySelector('#patient-login')?.classList.add('hidden');
+    root.querySelector('#doctor-select-gate')?.classList.add('hidden');
     const gate = root.querySelector('#pin-gate');
     gate.classList.remove('hidden');
     gate.dataset.role = role;
@@ -1992,6 +2094,7 @@ function renderLogin(root) {
   root.querySelectorAll('[data-action="back-roles"]').forEach(b => b.addEventListener('click', () => {
     root.querySelector('#patient-login')?.classList.add('hidden');
     root.querySelector('#pin-gate')?.classList.add('hidden');
+    root.querySelector('#doctor-select-gate')?.classList.add('hidden');
     root.querySelector('#role-select')?.classList.remove('hidden');
   }));
 
@@ -2046,7 +2149,8 @@ function renderPatient(root) {
       selectedPatientId = (activeOne || familyPatients[familyPatients.length - 1])?.id || null;
     }
     const patient = familyPatients.find(p => p.id === selectedPatientId) || null;
-    const snap = queueEngine.getSnapshot();
+    const snap = patient ? queueEngine.getSnapshot(patient.doctorId) : queueEngine.getSnapshot(null);
+    const doctorInfo = patient ? store.getDoctor(patient.doctorId) : null;
     const eta = patient ? queueEngine.getEtaForPatient(patient.id) : null;
     const history = store.getHistoryForPhone(session.phone);
 
@@ -2102,6 +2206,7 @@ function renderPatient(root) {
                 <div class="pb-2">${pStatusBadge(patient.status)}</div>
               </div>
               <p class="mt-3 text-brand-50 font-medium">${patient.name}</p>
+              ${doctorInfo ? `<p class="text-[11px] text-brand-100/90 mt-0.5">${icon('stethoscope', 11)} ${escapeHtml(doctorInfo.name)} — ${escapeHtml(doctorInfo.specialty)}</p>` : ''}
               <p class="text-xs text-brand-100/80 mt-0.5">${formatDateTime(patient.createdAt)}</p>
             </div>
           </div>
@@ -2170,7 +2275,7 @@ function renderPatient(root) {
               ${snap.isPaused ? `
                 <div class="mt-4 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 px-3 py-2.5 text-sm text-amber-800 dark:text-amber-200 flex items-start gap-2">
                   ${icon('pause-circle', 18, 'shrink-0 mt-0.5')}
-                  <span>${queueEngine.getDelayMessage()}</span>
+                  <span>${queueEngine.getDelayMessage(patient.doctorId)}</span>
                 </div>
               ` : ''}
             </div>
@@ -2350,8 +2455,9 @@ function renderReception(root) {
 
   const paint = () => {
     const state = store.getState();
-    const snap = queueEngine.getSnapshot();
+    const overview = queueEngine.getOverview();
     const searchQ = (document.getElementById('search-input') || {}).value || '';
+    const selectedDoctorId = (document.getElementById('register-doctor') || {}).value || state.doctors[0]?.id || '';
 
     const filtered = searchQ
       ? store.searchPatients(searchQ)
@@ -2377,10 +2483,10 @@ function renderReception(root) {
 
       <main class="flex-1 max-w-6xl mx-auto w-full px-4 sm:px-6 py-5 view-enter">
         <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
-          ${metricCard('In Queue', snap.totalInQueue, snap.totalWaiting + ' waiting', 'teal')}
-          ${metricCard('Current Token', snap.currentToken ?? '—', '', 'amber')}
-          ${metricCard('Seen Today', snap.totalSeen, 'Avg ' + snap.avgConsultMin + ' min', 'slate')}
-          ${metricCard('Next Token', state.nextToken, 'Will be issued', 'rose')}
+          ${metricCard('In Queue', overview.totalInQueue, overview.totalWaiting + ' waiting', 'teal')}
+          ${metricCard('Doctors', overview.doctorCount, overview.doctorCount === 1 ? 'doctor today' : 'doctors today', 'amber')}
+          ${metricCard('Seen Today', overview.totalSeen, 'across all doctors', 'slate')}
+          ${metricCard('Total Patients', filtered.filter(p => p.day === state.day).length, 'today', 'rose')}
         </div>
 
         <div class="grid lg:grid-cols-5 gap-6">
@@ -2390,6 +2496,13 @@ function renderReception(root) {
                 ${icon('user-plus', 18, 'text-brand-600')} Register Patient
               </h2>
               <form id="register-form" class="space-y-3">
+                <div>
+                  <label class="text-xs font-medium text-slate-500 mb-1 block">Doctor</label>
+                  <select id="register-doctor" name="doctorId" required
+                    class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent text-sm outline-none focus:ring-2 focus:ring-brand-500 transition">
+                    ${state.doctors.map(d => `<option value="${d.id}" ${d.id === selectedDoctorId ? 'selected' : ''}>${escapeHtml(d.name)} — ${escapeHtml(d.specialty)}</option>`).join('')}
+                  </select>
+                </div>
                 <div>
                   <label class="text-xs font-medium text-slate-500 mb-1 block">Full Name</label>
                   <input name="name" required placeholder="Patient name"
@@ -2409,15 +2522,49 @@ function renderReception(root) {
                   <input type="checkbox" name="emergency" class="w-4 h-4 rounded border-slate-300 text-rose-600 focus:ring-rose-500" />
                   <span class="text-sm font-medium text-rose-600 dark:text-rose-400">Emergency priority</span>
                 </label>
-                <button type="submit" class="w-full py-3 rounded-xl bg-brand-600 hover:bg-brand-700 text-white font-semibold text-sm shadow-soft transition active:scale-[0.98] flex items-center justify-center gap-2">
+                <button type="submit" ${!state.doctors.length ? 'disabled' : ''} class="w-full py-3 rounded-xl bg-brand-600 hover:bg-brand-700 disabled:opacity-40 text-white font-semibold text-sm shadow-soft transition active:scale-[0.98] flex items-center justify-center gap-2">
                   ${icon('ticket', 18)} Issue Digital Token
+                </button>
+                ${!state.doctors.length ? `<p class="text-xs text-rose-500 text-center">Add a doctor below before registering patients.</p>` : ''}
+              </form>
+            </div>
+
+            <!-- Manage Doctors -->
+            <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card p-5">
+              <h2 class="font-display font-bold text-base mb-4 flex items-center gap-2">
+                ${icon('stethoscope', 18, 'text-violet-600')} Doctors (${state.doctors.length})
+              </h2>
+              <div class="space-y-2 mb-4">
+                ${state.doctors.map(d => {
+                  const dSnap = queueEngine.getSnapshot(d.id);
+                  return `
+                    <div class="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/60">
+                      <div class="min-w-0">
+                        <p class="text-sm font-semibold truncate">${escapeHtml(d.name)}</p>
+                        <p class="text-[11px] text-slate-500 truncate">${escapeHtml(d.specialty)} · ${dSnap.totalWaiting} waiting</p>
+                      </div>
+                      ${doctorStatusBadge(d.status)}
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+              <button type="button" data-action="toggle-add-doctor" class="w-full py-2.5 rounded-xl border border-dashed border-slate-300 dark:border-slate-700 text-sm font-medium text-slate-600 dark:text-slate-400 hover:border-brand-400 hover:text-brand-600 transition flex items-center justify-center gap-1.5">
+                ${icon('plus', 16)} Add Doctor
+              </button>
+              <form id="add-doctor-form" class="hidden mt-3 space-y-2">
+                <input name="name" required placeholder="Doctor name (e.g. Dr. Kumar)"
+                  class="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent text-sm outline-none focus:ring-2 focus:ring-brand-500 transition" />
+                <input name="specialty" placeholder="Specialty (e.g. Cardiologist)"
+                  class="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent text-sm outline-none focus:ring-2 focus:ring-brand-500 transition" />
+                <button type="submit" class="w-full py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 text-white font-semibold text-sm shadow-soft transition active:scale-[0.98]">
+                  Add Doctor
                 </button>
               </form>
             </div>
 
             <div class="rounded-2xl bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 p-4 text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
               <p class="font-semibold text-slate-700 dark:text-slate-300 mb-1">Live Queue Engine</p>
-              Tokens update instantly when the doctor starts, finishes, pauses, or when an emergency is added. ETA uses average consultation time (${snap.avgConsultMin} min).
+              Each doctor has their own independent queue and token counter. Tokens update instantly when a doctor starts, finishes, pauses, or when an emergency is added.
             </div>
           </div>
 
@@ -2426,7 +2573,6 @@ function renderReception(root) {
               <div class="p-4 border-b border-slate-100 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center gap-3">
                 <h2 class="font-display font-bold text-base flex items-center gap-2 flex-1">
                   ${icon('list-ordered', 18, 'text-brand-600')} Live Queue
-                  <span class="text-xs font-normal text-slate-400 ml-1">${doctorStatusBadge(snap.doctorStatus)}</span>
                 </h2>
                 <div class="relative">
                   <span class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">${icon('search', 16)}</span>
@@ -2441,6 +2587,7 @@ function renderReception(root) {
                   <div class="p-10 text-center text-sm text-slate-400">No patients found. Register one or load demo data.</div>
                 ` : filtered.map(p => {
                   const isActive = p.status === 'waiting' || p.status === 'consulting';
+                  const doc = store.getDoctor(p.doctorId);
                   return `
                     <div class="p-3 sm:p-3.5 ${p.status === 'consulting' ? 'bg-teal-50/50 dark:bg-teal-950/20' : ''}">
                       <div class="flex items-start gap-3">
@@ -2453,7 +2600,7 @@ function renderReception(root) {
                             ${p.isEmergency ? '<span class="text-[10px] font-bold uppercase text-rose-600 bg-rose-100 dark:bg-rose-900/50 px-1.5 py-0.5 rounded">Emergency</span>' : ''}
                             ${statusBadge(p.status)}
                           </div>
-                          <p class="text-xs text-slate-500 mt-0.5">${p.phone} · ${formatTime(p.createdAt)}</p>
+                          <p class="text-xs text-slate-500 mt-0.5">${p.phone} · ${formatTime(p.createdAt)}${doc ? ` · <span class="text-violet-600 dark:text-violet-400">${escapeHtml(doc.name)}</span>` : ''}</p>
                           ${isActive ? `
                             <div class="mt-2.5 flex flex-wrap gap-1.5">
                               ${p.status === 'waiting' ? `<button data-status="consulting" data-id="${p.id}" class="px-2.5 py-1 rounded-lg text-xs font-medium bg-teal-600 text-white hover:bg-teal-700 transition">Start</button>` : ''}
@@ -2491,10 +2638,36 @@ function renderReception(root) {
       const phone = fd.get('phone');
       const notes = fd.get('notes') || '';
       const isEmergency = fd.get('emergency') === 'on';
-      if (!name || !phone) return;
-      const p = store.registerWalkIn({ name, phone, isEmergency, notes });
+      const doctorId = fd.get('doctorId');
+      if (!name || !phone || !doctorId) return;
+      const p = store.registerWalkIn({ name, phone, isEmergency, notes, doctorId });
       notifications.toast('Token #' + p.token + ' issued', p.name + (isEmergency ? ' · Emergency priority' : ' · Added to queue'), 'success');
       e.target.reset();
+    });
+
+    root.querySelector('[data-action="toggle-add-doctor"]')?.addEventListener('click', () => {
+      root.querySelector('#add-doctor-form')?.classList.toggle('hidden');
+    });
+
+    root.querySelector('#add-doctor-form')?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const name = fd.get('name');
+      const specialty = fd.get('specialty');
+      if (!name) return;
+      const btn = e.target.querySelector('button[type="submit"]');
+      btn.disabled = true;
+      btn.textContent = 'Adding…';
+      const res = await store.addDoctor(name, specialty);
+      btn.disabled = false;
+      btn.textContent = 'Add Doctor';
+      if (res.ok) {
+        notifications.toast('Doctor added', res.doctor.name + ' can now receive patients', 'success');
+        e.target.reset();
+        paint();
+      } else {
+        notifications.toast('Error', res.error, 'error');
+      }
     });
   };
 
@@ -2859,13 +3032,18 @@ function renderDoctor(root) {
     window.location.hash = '#/';
     return;
   }
+  const doctorId = session.doctorId;
 
   const paint = () => {
     const state = store.getState();
-    const doctor = state.doctor;
-    const snap = queueEngine.getSnapshot();
-    const current = store.getCurrentPatient();
-    const waiting = store.getWaitingPatients();
+    const doctor = store.getDoctor(doctorId);
+    if (!doctor) {
+      window.location.hash = '#/';
+      return;
+    }
+    const snap = queueEngine.getSnapshot(doctorId);
+    const current = store.getCurrentPatient(doctorId);
+    const waiting = store.getWaitingPatients(doctorId);
 
     root.innerHTML = `
       ${headerBar({
@@ -2993,34 +3171,34 @@ function renderDoctor(root) {
       return;
     }
     if (btn.dataset.action === 'start') {
-      const res = store.doctorStartConsultation();
+      const res = store.doctorStartConsultation(doctorId);
       if (!res.ok) notifications.toast('Cannot start', res.error, 'warning');
       else notifications.toast('Consultation started', '#' + res.patient.token + ' · ' + res.patient.name, 'success');
     }
     if (btn.dataset.action === 'next') {
-      const res = store.doctorNextPatient();
+      const res = store.doctorNextPatient(doctorId);
       if (!res.ok) notifications.toast('Queue empty', res.error, 'warning');
       else notifications.toast('Next patient', '#' + res.patient.token + ' · ' + res.patient.name, 'success');
     }
     if (btn.dataset.action === 'pause') {
-      store.doctorPause('paused');
+      store.doctorPause(doctorId, 'paused');
       notifications.toast('Queue paused', 'Patients will see a delay notice', 'warning');
     }
     if (btn.dataset.action === 'break') {
-      store.doctorPause('break');
+      store.doctorPause(doctorId, 'break');
       notifications.toast('Lunch break', 'Queue paused for break', 'warning');
     }
     if (btn.dataset.action === 'emergency') {
-      store.doctorPause('emergency');
+      store.doctorPause(doctorId, 'emergency');
       notifications.toast('Emergency pause', 'Queue temporarily halted', 'error');
     }
     if (btn.dataset.action === 'resume') {
-      store.doctorResume();
+      store.doctorResume(doctorId);
       notifications.toast('Queue resumed', 'Doctor is available again', 'success');
     }
     if (btn.dataset.action === 'finish') {
       if (confirm('Finish the day? Remaining waiting patients will be marked cancelled.')) {
-        store.doctorFinishDay();
+        store.doctorFinishDay(doctorId);
         notifications.toast('Day finished', 'Thank you, Doctor', 'info');
       }
     }
@@ -3139,9 +3317,20 @@ function autoEnterRole() {
     return true;
   }
   if (PENDING_ROLE === 'doctor' && isPinUnlocked('doctor')) {
-    store.loginDoctor();
-    window.location.hash = '#/doctor';
-    return true;
+    const doctors = store.getState().doctors;
+    let doctorId = null;
+    if (doctors.length === 1) {
+      doctorId = doctors[0].id;
+    } else if (doctors.length > 1) {
+      const lastId = localStorage.getItem(`shq_last_doctor_${store.getState().hospitalId}`);
+      if (lastId && doctors.some(d => d.id === lastId)) doctorId = lastId;
+    }
+    if (doctorId) {
+      store.loginDoctor(doctorId);
+      window.location.hash = '#/doctor';
+      return true;
+    }
+    return false; // let renderLogin show the doctor-selection screen
   }
   return false;
 }
