@@ -1457,7 +1457,7 @@ function renderLogin(root) {
           </div>
 
           <!-- Role cards -->
-          <div class="space-y-3 ${hasHospital ? '' : 'hidden'}" id="role-select">
+          <div class="space-y-3 ${hasHospital && PENDING_ROLE !== 'patient' ? '' : 'hidden'}" id="role-select">
             <button data-role="patient" class="role-card w-full group flex items-center gap-4 p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card hover:border-brand-400 dark:hover:border-brand-600 transition card-interactive text-left">
               <div class="w-12 h-12 rounded-xl bg-brand-50 dark:bg-brand-950 text-brand-600 dark:text-brand-400 flex items-center justify-center group-hover:scale-105 transition">
                 ${icon('smartphone', 22)}
@@ -1493,7 +1493,7 @@ function renderLogin(root) {
           </div>
 
           <!-- Patient OTP form (hidden initially) -->
-          <div id="patient-login" class="hidden mt-6 animate-slide-up">
+          <div id="patient-login" class="${hasHospital && PENDING_ROLE === 'patient' ? '' : 'hidden'} mt-6 animate-slide-up">
             <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card p-5">
               <button data-action="back-roles" class="text-sm text-slate-500 hover:text-brand-600 flex items-center gap-1 mb-4">
                 ${icon('arrow-left', 16)} Back
@@ -1529,6 +1529,10 @@ function renderLogin(root) {
 
   refreshIcons();
 
+  if (hasHospital && PENDING_ROLE === 'patient') {
+    root.querySelector('#phone-input')?.focus();
+  }
+
   // Hospital code entry
   root.querySelector('#btn-hospital-code')?.addEventListener('click', async () => {
     const codeInput = root.querySelector('#hospital-code-input');
@@ -1545,6 +1549,7 @@ function renderLogin(root) {
       return;
     }
     notifications.toast('Connected', res.hospital.name, 'success');
+    if (autoEnterRole()) return;
     renderLogin(root);
   });
   root.querySelector('#hospital-code-input')?.addEventListener('keydown', (e) => {
@@ -2411,6 +2416,23 @@ function hideSplash() {
   }
 }
 
+let PENDING_ROLE = null;
+
+function autoEnterRole() {
+  if (!store.getState().hospitalId) return false;
+  if (PENDING_ROLE === 'reception') {
+    store.loginReception();
+    window.location.hash = '#/reception';
+    return true;
+  }
+  if (PENDING_ROLE === 'doctor') {
+    store.loginDoctor();
+    window.location.hash = '#/doctor';
+    return true;
+  }
+  return false;
+}
+
 async function boot() {
   try {
     var bar = document.getElementById('splash-bar');
@@ -2422,6 +2444,7 @@ async function boot() {
     const qIdx = hash.indexOf('?');
     const params = new URLSearchParams(qIdx >= 0 ? hash.slice(qIdx + 1) : '');
     const urlCode = params.get('h');
+    PENDING_ROLE = params.get('role'); // 'reception' | 'doctor' | 'patient' | null — from dedicated shortcut links
 
     if (urlCode) {
       await store.initHospitalByCode(urlCode);
@@ -2435,7 +2458,7 @@ async function boot() {
     notifications.start();
     if (bar) bar.style.width = '100%';
     window.addEventListener('hashchange', route);
-    route();
+    if (!autoEnterRole()) route();
     setTimeout(hideSplash, 350);
   } catch (err) {
     console.error(err);
