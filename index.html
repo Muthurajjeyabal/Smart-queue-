@@ -438,15 +438,43 @@ class Store {
         .eq('code', clean)
         .maybeSingle();
       if (error || !hospital) {
-        return { ok: false, error: 'Hospital code not found' };
+        const suggestions = await this.suggestHospitalCodes(clean);
+        return { ok: false, error: 'Hospital code not found', suggestions };
       }
       await this._loadHospital(hospital);
       localStorage.setItem('shq_hospital_id', hospital.id);
       localStorage.setItem('shq_hospital_code', hospital.code);
+      this._rememberCode(hospital.code);
       return { ok: true, hospital };
     } catch (e) {
       console.error(e);
       return { ok: false, error: 'Connection error: ' + (e.message || e) };
+    }
+  }
+
+  async suggestHospitalCodes(partial) {
+    if (!partial || partial.length < 2) return [];
+    try {
+      const { data } = await sb.from('hospitals').select('code, name').ilike('code', `%${partial}%`).limit(3);
+      return data || [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  _rememberCode(code) {
+    try {
+      let recent = JSON.parse(localStorage.getItem('shq_recent_codes') || '[]');
+      recent = [code, ...recent.filter(c => c !== code)].slice(0, 3);
+      localStorage.setItem('shq_recent_codes', JSON.stringify(recent));
+    } catch (e) {}
+  }
+
+  getRecentCodes() {
+    try {
+      return JSON.parse(localStorage.getItem('shq_recent_codes') || '[]');
+    } catch (e) {
+      return [];
     }
   }
 
@@ -1420,14 +1448,16 @@ function refreshIcons() {
 
 
 const ROLE_BRANDING = {
-  doctor: { title: 'Doctor', tagline: 'Welcome Doctor — consultation & queue control', icon: 'stethoscope', gradient: 'from-violet-500 to-purple-700' },
-  reception: { title: 'Reception Desk', tagline: 'Register patients & manage the queue', icon: 'clipboard-list', gradient: 'from-sky-500 to-blue-700' },
-  patient: { title: 'My Queue', tagline: 'Track your token live', icon: 'smartphone', gradient: 'from-emerald-500 to-teal-600' },
+  doctor: { title: 'Doctor', tagline: 'Welcome Doctor — consultation & queue control', icon: 'stethoscope', gradient: 'from-violet-500 to-purple-700', accent: 'violet', ring: 'focus:ring-violet-500', btn: 'bg-violet-600 hover:bg-violet-700', chip: 'bg-violet-50 dark:bg-violet-950 text-violet-700 dark:text-violet-300 border-violet-200 dark:border-violet-800' },
+  reception: { title: 'Reception Desk', tagline: 'Register patients & manage the queue', icon: 'clipboard-list', gradient: 'from-sky-500 to-blue-700', accent: 'sky', ring: 'focus:ring-sky-500', btn: 'bg-sky-600 hover:bg-sky-700', chip: 'bg-sky-50 dark:bg-sky-950 text-sky-700 dark:text-sky-300 border-sky-200 dark:border-sky-800' },
+  patient: { title: 'My Queue', tagline: "We'll track your token live — no waiting room needed", icon: 'smartphone', gradient: 'from-emerald-500 to-teal-600', accent: 'emerald', ring: 'focus:ring-emerald-500', btn: 'bg-emerald-600 hover:bg-emerald-700', chip: 'bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800' },
 };
+const DEFAULT_BRANDING = { title: 'Smart Hospital Queue', tagline: 'Live digital tokens · Accurate ETA · Zero long waits', icon: 'clock', gradient: 'from-brand-500 to-teal-600', accent: 'brand', ring: 'focus:ring-brand-500', btn: 'bg-brand-600 hover:bg-brand-700', chip: 'bg-brand-50 dark:bg-brand-950 text-brand-700 dark:text-brand-300 border-brand-200 dark:border-brand-800' };
 
 function renderLogin(root) {
   const hasHospital = !!store.getState().hospitalId;
-  const branding = ROLE_BRANDING[PENDING_ROLE] || { title: 'Smart Hospital Queue', tagline: 'Live digital tokens · Accurate ETA · Zero long waits', icon: 'clock', gradient: 'from-brand-500 to-teal-600' };
+  const branding = ROLE_BRANDING[PENDING_ROLE] || DEFAULT_BRANDING;
+  const recentCodes = store.getRecentCodes();
 
   root.innerHTML = `
     <div class="min-h-screen flex flex-col">
@@ -1437,8 +1467,10 @@ function renderLogin(root) {
       </div>
 
       <!-- Hero -->
-      <div class="flex-1 flex flex-col items-center justify-center px-5 py-10">
-        <div class="w-full max-w-md">
+      <div class="relative flex-1 flex flex-col items-center justify-center px-5 py-10 overflow-hidden">
+        <div class="pointer-events-none absolute -top-24 -left-16 w-64 h-64 rounded-full bg-${branding.accent}-400/20 blur-3xl"></div>
+        <div class="pointer-events-none absolute -bottom-24 -right-16 w-72 h-72 rounded-full bg-${branding.accent}-500/15 blur-3xl"></div>
+        <div class="w-full max-w-md relative">
           <div class="text-center mb-8">
             <div class="inline-flex w-16 h-16 rounded-2xl bg-gradient-to-br ${branding.gradient} text-white items-center justify-center shadow-glow mb-5">
               ${icon(branding.icon, 32)}
@@ -1450,17 +1482,34 @@ function renderLogin(root) {
           </div>
 
           <!-- Hospital code gate -->
-          <div id="hospital-gate" class="${hasHospital ? 'hidden' : ''} mb-6">
+          <div id="hospital-gate" class="${hasHospital ? 'hidden' : ''} mb-6 animate-slide-up">
             <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card p-5">
+              <div class="flex items-center gap-1.5 mb-3">
+                <span class="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full border ${branding.chip}">
+                  ${icon('lock', 11)} Secure hospital access
+                </span>
+              </div>
               <h2 class="font-display font-bold text-base mb-1">Enter Hospital Code</h2>
               <p class="text-xs text-slate-500 mb-4">Your hospital admin will give you this code.</p>
-              <input id="hospital-code-input" type="text" placeholder="e.g. apollo-anna-nagar"
-                class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent text-sm outline-none focus:ring-2 focus:ring-brand-500 transition mb-3" />
-              <button id="btn-hospital-code" class="w-full py-3 rounded-xl bg-brand-600 hover:bg-brand-700 text-white font-semibold text-sm shadow-soft transition active:scale-[0.98]">
-                Continue
+              <input id="hospital-code-input" list="recent-codes-list" type="text" placeholder="e.g. apollo-anna-nagar"
+                class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent text-sm outline-none focus:ring-2 ${branding.ring} transition mb-3" />
+              <datalist id="recent-codes-list">
+                ${recentCodes.map(c => `<option value="${escapeHtml(c)}">`).join('')}
+              </datalist>
+              ${recentCodes.length ? `
+                <div class="flex flex-wrap gap-2 mb-3">
+                  ${recentCodes.map(c => `<button type="button" data-recent-code="${escapeHtml(c)}" class="text-[11px] px-2.5 py-1 rounded-full border ${branding.chip} hover:opacity-80 transition">${icon('history', 10)} ${escapeHtml(c)}</button>`).join('')}
+                </div>
+              ` : ''}
+              <button id="btn-hospital-code" class="w-full py-3 rounded-xl ${branding.btn} text-white font-semibold text-sm shadow-soft transition active:scale-[0.98] flex items-center justify-center gap-2">
+                <span id="btn-hospital-code-label">Continue</span>
               </button>
-              <p id="hospital-code-error" class="text-xs text-rose-500 mt-3 text-center hidden"></p>
+              <div id="hospital-code-error" class="hidden mt-3 text-center">
+                <p class="text-xs text-rose-500">Hospital code not found</p>
+                <div id="hospital-code-suggestions" class="flex flex-wrap justify-center gap-2 mt-2"></div>
+              </div>
             </div>
+            <p class="text-center text-[10px] text-slate-400 mt-4">Powered by Smart Hospital Queue Platform</p>
           </div>
 
           <!-- Role cards -->
@@ -1541,26 +1590,49 @@ function renderLogin(root) {
   }
 
   // Hospital code entry
-  root.querySelector('#btn-hospital-code')?.addEventListener('click', async () => {
+  async function attemptHospitalCode(codeValue) {
     const codeInput = root.querySelector('#hospital-code-input');
-    const err = root.querySelector('#hospital-code-error');
+    const errBox = root.querySelector('#hospital-code-error');
+    const suggBox = root.querySelector('#hospital-code-suggestions');
     const btn = root.querySelector('#btn-hospital-code');
+    const label = root.querySelector('#btn-hospital-code-label');
+    errBox.classList.add('hidden');
+    suggBox.innerHTML = '';
     btn.disabled = true;
-    btn.textContent = 'Checking…';
-    const res = await store.initHospitalByCode(codeInput.value);
+    label.innerHTML = `${icon('loader-2', 16, 'animate-spin')} Checking…`;
+    const res = await store.initHospitalByCode(codeValue);
     btn.disabled = false;
-    btn.textContent = 'Continue';
+    label.textContent = 'Continue';
     if (!res.ok) {
-      err.textContent = res.error;
-      err.classList.remove('hidden');
+      errBox.classList.remove('hidden');
+      if (res.suggestions && res.suggestions.length) {
+        suggBox.innerHTML = `<p class="w-full text-[11px] text-slate-400 mb-1">Did you mean:</p>` +
+          res.suggestions.map(s => `<button type="button" data-suggest-code="${escapeHtml(s.code)}" class="text-[11px] px-2.5 py-1 rounded-full border ${branding.chip} hover:opacity-80 transition">${escapeHtml(s.name)} (${escapeHtml(s.code)})</button>`).join('');
+        suggBox.querySelectorAll('[data-suggest-code]').forEach(b => {
+          b.addEventListener('click', () => {
+            codeInput.value = b.dataset.suggestCode;
+            attemptHospitalCode(b.dataset.suggestCode);
+          });
+        });
+      }
       return;
     }
     notifications.toast('Connected', res.hospital.name, 'success');
     if (autoEnterRole()) return;
     renderLogin(root);
+  }
+
+  root.querySelector('#btn-hospital-code')?.addEventListener('click', () => {
+    attemptHospitalCode(root.querySelector('#hospital-code-input').value);
   });
   root.querySelector('#hospital-code-input')?.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') root.querySelector('#btn-hospital-code')?.click();
+  });
+  root.querySelectorAll('[data-recent-code]').forEach(b => {
+    b.addEventListener('click', () => {
+      root.querySelector('#hospital-code-input').value = b.dataset.recentCode;
+      attemptHospitalCode(b.dataset.recentCode);
+    });
   });
 
   root.querySelector('[data-action="change-hospital"]')?.addEventListener('click', () => {
