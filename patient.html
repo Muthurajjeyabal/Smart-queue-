@@ -5,7 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>My Queue – Smart Hospital Queue</title>
 <script>
-  window.location.replace('index.html#/?role=patient');
+  var params = new URLSearchParams(window.location.search);
+  var h = params.get('h');
+  var target = 'index.html#/?role=patient' + (h ? '&h=' + encodeURIComponent(h) : '');
+  window.location.replace(target);
 </script>
 </head>
 <body></body>

@@ -2151,6 +2151,9 @@ function renderReception(root) {
         subtitle: session.name,
         rightHtml: `
           ${themeToggleBtn()}
+          <button data-action="show-qr" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 transition" title="Patient QR code">
+            ${icon('qr-code', 14)} <span class="hidden sm:inline">Patient QR</span>
+          </button>
           <button data-action="seed" class="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 transition" title="Load demo patients">
             ${icon('sparkles', 14)} Demo data
           </button>
@@ -2298,9 +2301,70 @@ function renderReception(root) {
       store.seedDemoIfEmpty();
       notifications.toast('Demo data loaded', 'Sample patients added to queue', 'info');
     }
+    if (btn.dataset.action === 'show-qr') {
+      showPatientQrModal();
+    }
     if (btn.dataset.status && btn.dataset.id) {
       store.setPatientStatus(btn.dataset.id, btn.dataset.status);
       notifications.toast('Status updated', 'Marked as ' + btn.dataset.status.replace('_', ' '), 'info');
+    }
+  });
+}
+
+function showPatientQrModal() {
+  const state = store.getState();
+  const patientUrl = window.location.origin + window.location.pathname.replace(/[^/]*$/, '') + 'patient.html?h=' + encodeURIComponent(state.hospitalCode || '');
+  const qrImgUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=280x280&data=' + encodeURIComponent(patientUrl);
+
+  const overlay = document.createElement('div');
+  overlay.id = 'qr-modal-overlay';
+  overlay.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm px-4';
+  overlay.innerHTML = `
+    <div class="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl max-w-sm w-full p-6 text-center relative animate-slide-up">
+      <button data-action="close-qr" class="absolute top-3 right-3 p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+        ${icon('x', 18)}
+      </button>
+      <h3 class="font-display font-bold text-base mb-1">${escapeHtml(state.hospitalName || 'Patient')} — Scan to Check Queue</h3>
+      <p class="text-xs text-slate-500 mb-4">Print this and stick it at reception. Patients scan to view their token live.</p>
+      <div class="bg-white p-3 rounded-xl inline-block border border-slate-200">
+        <img src="${qrImgUrl}" alt="Patient QR Code" width="220" height="220" class="mx-auto" />
+      </div>
+      <p class="text-[11px] font-mono break-all text-slate-500 mt-4 px-2">${escapeHtml(patientUrl)}</p>
+      <div class="flex gap-2 mt-4">
+        <button data-action="copy-qr-link" class="flex-1 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-sm font-medium hover:bg-slate-200 dark:hover:bg-slate-700 transition flex items-center justify-center gap-1.5">
+          ${icon('copy', 14)} Copy Link
+        </button>
+        <button data-action="print-qr" class="flex-1 py-2.5 rounded-xl bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium transition flex items-center justify-center gap-1.5">
+          ${icon('printer', 14)} Print
+        </button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  refreshIcons();
+
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay || e.target.closest('[data-action="close-qr"]')) {
+      overlay.remove();
+    }
+    if (e.target.closest('[data-action="copy-qr-link"]')) {
+      copyToClipboard(patientUrl);
+      notifications.toast('Copied', 'Patient link copied to clipboard', 'success');
+    }
+    if (e.target.closest('[data-action="print-qr"]')) {
+      const w = window.open('', '_blank');
+      w.document.write(`
+        <html><head><title>Patient QR — ${escapeHtml(state.hospitalName || '')}</title></head>
+        <body style="font-family:sans-serif;text-align:center;padding:40px;">
+          <h2>${escapeHtml(state.hospitalName || '')}</h2>
+          <p>Scan to check your queue status live</p>
+          <img src="${qrImgUrl}" width="300" height="300" />
+          <p style="font-size:12px;color:#666;word-break:break-all;">${escapeHtml(patientUrl)}</p>
+        </body></html>
+      `);
+      w.document.close();
+      w.focus();
+      setTimeout(() => w.print(), 300);
     }
   });
 }
