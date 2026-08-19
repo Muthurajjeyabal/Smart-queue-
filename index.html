@@ -511,7 +511,8 @@ function createInitialState() {
     hospitalCode: null,
     hospitalName: null,
     // Multiple doctors per hospital — each has its own queue, status, token counter
-    doctors: [], // array of { id, name, specialty, avgConsultMin, status, currentPatientId, consultStartedAt, totalSeenToday, pauseReason, doctorStatusId, nextToken }
+    doctors: [], // array of { id, name, specialty, avgConsultMin, active, status, currentPatientId, consultStartedAt, totalSeenToday, pauseReason, doctorStatusId, nextToken }
+    receptionStaff: [], // array of { id, name, active }
     // All patients for today (and history)
     patients: [],
     // Appointment requests from the Patient app, awaiting Reception approval
@@ -552,6 +553,7 @@ function mapPatientRow(r) {
     consultEndedAt: r.consult_ended_at,
     doctorId: r.doctor_id,
     hospitalId: r.hospital_id,
+    registeredBy: r.registered_by || '',
   };
 }
 
@@ -678,7 +680,7 @@ class Store {
     // a fresh hospital simply starts with zero doctors, no placeholder created)
     let { data: staffRows } = await sb
       .from('staff')
-      .select('*')
+      .select('id,hospital_id,role,name,specialty,avg_consult_min,active,created_at')
       .eq('hospital_id', hospital.id)
       .eq('role', 'doctor')
       .order('created_at', { ascending: true });
@@ -723,8 +725,18 @@ class Store {
         totalSeenToday: statusRow.total_seen_today || 0,
         pauseReason: statusRow.pause_reason || null,
         nextToken: statusRow.next_token || 1,
+        active: staffRow.active !== false,
       };
     });
+
+    // Load reception staff for this hospital
+    const { data: receptionRows } = await sb
+      .from('staff')
+      .select('id,name,active')
+      .eq('hospital_id', hospital.id)
+      .eq('role', 'reception')
+      .order('created_at', { ascending: true });
+    this.state.receptionStaff = (receptionRows || []).map(r => ({ id: r.id, name: r.name, active: r.active !== false }));
 
     this.state.day = today;
 
@@ -766,6 +778,14 @@ class Store {
     return this.state.doctors.find(d => d.id === id) || null;
   }
 
+  getActiveDoctors() {
+    return this.state.doctors.filter(d => d.active !== false);
+  }
+
+  getActiveReceptionStaff() {
+    return this.state.receptionStaff.filter(s => s.active !== false);
+  }
+
   async addDoctor(name, specialty) {
     const today = todayKey();
     try {
@@ -775,7 +795,8 @@ class Store {
         name: name.trim(),
         specialty: (specialty || 'General Physician').trim(),
         avg_consult_min: DEFAULT_AVG_CONSULT,
-      }).select().single();
+        active: true,
+      }).select('id,hospital_id,role,name,specialty,avg_consult_min,active').single();
       if (error || !staffRow) throw error || new Error('Insert failed');
 
       const { data: statusRow } = await sb.from('doctor_status').insert({
@@ -791,6 +812,7 @@ class Store {
         name: staffRow.name,
         specialty: staffRow.specialty,
         avgConsultMin: staffRow.avg_consult_min,
+        active: true,
         doctorStatusId: statusRow.id,
         status: 'available',
         currentPatientId: null,
@@ -804,6 +826,97 @@ class Store {
     } catch (e) {
       console.error(e);
       return { ok: false, error: e.message || 'Could not add doctor' };
+    }
+  }
+
+  async updateDoctor(doctorId, { name, specialty }) {
+    const doc = this.getDoctor(doctorId);
+    if (!doc) return { ok: false, error: 'Doctor not found' };
+    try {
+      await sb.from('staff').update({ name: name.trim(), specialty: specialty.trim() }).eq('id', doctorId);
+      doc.name = name.trim();
+      doc.specialty = specialty.trim();
+      this.notify();
+      return { ok: true };
+    } catch (e) {
+      console.error(e);
+      return { ok: false, error: 'Could not update doctor' };
+    }
+  }
+
+  async setDoctorActive(doctorId, active) {
+    const doc = this.getDoctor(doctorId);
+    if (!doc) return { ok: false, error: 'Doctor not found' };
+    try {
+      await sb.from('staff').update({ active }).eq('id', doctorId);
+      doc.active = active;
+      this.notify();
+      return { ok: true };
+    } catch (e) {
+      console.error(e);
+      return { ok: false, error: 'Could not update doctor' };
+    }
+  }
+
+  // ---------- Reception staff (per-person tracking) ----------
+  async addReceptionStaff(name) {
+    try {
+      const pin = generatePin();
+      const { data: staffRow, error } = await sb.from('staff').insert({
+        hospital_id: this.state.hospitalId,
+        role: 'reception',
+        name: name.trim(),
+        active: true,
+        pin,
+      }).select('id,name,active').single();
+      if (error || !staffRow) throw error || new Error('Insert failed');
+      const entry = { id: staffRow.id, name: staffRow.name, active: true };
+      this.state.receptionStaff.push(entry);
+      this.notify();
+      return { ok: true, staff: entry, pin };
+    } catch (e) {
+      console.error(e);
+      return { ok: false, error: e.message || 'Could not add staff' };
+    }
+  }
+
+  async setReceptionStaffActive(staffId, active) {
+    const s = this.state.receptionStaff.find(x => x.id === staffId);
+    if (!s) return { ok: false, error: 'Staff not found' };
+    try {
+      await sb.from('staff').update({ active }).eq('id', staffId);
+      s.active = active;
+      this.notify();
+      return { ok: true };
+    } catch (e) {
+      console.error(e);
+      return { ok: false, error: 'Could not update staff' };
+    }
+  }
+
+  async resetReceptionStaffPin(staffId) {
+    try {
+      const pin = generatePin();
+      await sb.from('staff').update({ pin }).eq('id', staffId);
+      return { ok: true, pin };
+    } catch (e) {
+      console.error(e);
+      return { ok: false, error: 'Could not reset PIN' };
+    }
+  }
+
+  // ---------- PIN management (Manager) ----------
+  async resetHospitalPin(role) {
+    const column = role === 'reception' ? 'reception_pin' : role === 'doctor' ? 'doctor_pin' : role === 'manager' ? 'manager_pin' : null;
+    if (!column) return { ok: false, error: 'Invalid role' };
+    try {
+      const pin = generatePin();
+      const { error } = await sb.from('hospitals').update({ [column]: pin }).eq('id', this.state.hospitalId);
+      if (error) throw error;
+      return { ok: true, pin };
+    } catch (e) {
+      console.error(e);
+      return { ok: false, error: 'Could not reset PIN' };
     }
   }
 
@@ -901,6 +1014,7 @@ class Store {
         is_emergency: p.isEmergency,
         is_appointment: !!p.isAppointment,
         notes: p.notes,
+        registered_by: p.registeredBy || null,
         created_at: p.createdAt,
       });
       if (error) throw error;
@@ -963,8 +1077,8 @@ class Store {
     return { ok: true, phone: clean };
   }
 
-  loginReception(name = 'Reception Staff') {
-    this.state.sessions.reception = { name };
+  loginReception(name = 'Reception Staff', staffId = null) {
+    this.state.sessions.reception = { name, staffId };
     this.notify();
     return { ok: true };
   }
@@ -991,7 +1105,7 @@ class Store {
   }
 
   // ---------- Patient registration & tokens ----------
-  registerWalkIn({ name, phone, isEmergency = false, notes = '', doctorId, isAppointment = false }) {
+  registerWalkIn({ name, phone, isEmergency = false, notes = '', doctorId, isAppointment = false, registeredBy = '' }) {
     const doc = this.getDoctor(doctorId);
     if (!doc) throw new Error('A doctor must be selected to register a patient');
     const cleanPhone = String(phone).replace(/\D/g, '').slice(-10);
@@ -1006,6 +1120,7 @@ class Store {
       isEmergency: !!isEmergency,
       isAppointment: !!isAppointment,
       notes,
+      registeredBy,
       createdAt: new Date().toISOString(),
       consultStartedAt: null,
       consultEndedAt: null,
@@ -1300,19 +1415,29 @@ class Store {
         untilStr = todayKey();
       }
 
-      const { data, error } = await sb
-        .from('patients')
-        .select('day, status, doctor_id, is_emergency')
-        .eq('hospital_id', this.state.hospitalId)
-        .gte('day', sinceStr)
-        .lte('day', untilStr)
-        .order('day', { ascending: false });
+      const [{ data, error }, { data: feedbackRows, error: fbError }] = await Promise.all([
+        sb.from('patients')
+          .select('id, day, status, doctor_id, is_emergency, created_at, name, phone, token')
+          .eq('hospital_id', this.state.hospitalId)
+          .gte('day', sinceStr)
+          .lte('day', untilStr)
+          .order('day', { ascending: false }),
+        sb.from('feedback')
+          .select('rating, comment, patient_name, token, created_at')
+          .eq('hospital_id', this.state.hospitalId)
+          .gte('created_at', sinceStr + 'T00:00:00')
+          .lte('created_at', untilStr + 'T23:59:59')
+          .order('created_at', { ascending: false }),
+      ]);
 
       if (error) throw error;
       const rows = data || [];
+      const feedback = fbError ? [] : (feedbackRows || []);
 
       const byDay = {};
       const byDoctor = {};
+      const byHour = {};
+      for (let h = 0; h < 24; h++) byHour[h] = 0;
       let totalCompleted = 0, totalNoShow = 0, totalCancelled = 0, totalEmergency = 0;
 
       rows.forEach(r => {
@@ -1327,7 +1452,21 @@ class Store {
         if (!byDoctor[docId]) byDoctor[docId] = { doctorId: docId, total: 0, completed: 0 };
         byDoctor[docId].total++;
         if (r.status === 'completed') byDoctor[docId].completed++;
+
+        if (r.created_at) {
+          const hr = new Date(r.created_at).getHours();
+          byHour[hr] = (byHour[hr] || 0) + 1;
+        }
       });
+
+      const peakHours = Object.entries(byHour)
+        .map(([hour, count]) => ({ hour: Number(hour), count }))
+        .sort((a, b) => b.count - a.count);
+
+      const avgRating = feedback.length
+        ? Math.round((feedback.reduce((sum, f) => sum + f.rating, 0) / feedback.length) * 10) / 10
+        : null;
+      const ratingCounts = [1, 2, 3, 4, 5].map(n => feedback.filter(f => f.rating === n).length);
 
       return {
         ok: true,
@@ -1337,6 +1476,10 @@ class Store {
           totalPatients: rows.length,
           totalCompleted, totalNoShow, totalCancelled, totalEmergency,
         },
+        peakHours,
+        feedback: { entries: feedback, avgRating, ratingCounts, count: feedback.length },
+        rawRows: rows,
+        range: { from: sinceStr, to: untilStr },
       };
     } catch (e) {
       console.error(e);
@@ -2171,15 +2314,23 @@ function renderLogin(root) {
   // ---------- Staff PIN gate ----------
   function enterStaffRole(role) {
     if (role === 'reception') {
-      store.loginReception();
-      notifications.toast('Welcome', 'Reception desk ready', 'success');
-      window.location.hash = '#/reception';
+      const staff = store.getActiveReceptionStaff();
+      if (staff.length === 0) {
+        // No named staff set up yet — fall back to the shared hospital Reception PIN
+        if (isPinUnlocked('reception')) {
+          enterAsReception('Reception Staff');
+        } else {
+          showPinGate('reception');
+        }
+      } else {
+        showReceptionSelectGate();
+      }
     } else if (role === 'manager') {
       store.loginManager();
       notifications.toast('Welcome', 'Manager dashboard ready', 'success');
       window.location.hash = '#/manager';
     } else if (role === 'doctor') {
-      const doctors = store.getState().doctors;
+      const doctors = store.getActiveDoctors();
       if (doctors.length === 1) {
         enterAsDoctor(doctors[0].id);
       } else if (doctors.length > 1) {
@@ -2188,6 +2339,50 @@ function renderLogin(root) {
         notifications.toast('No doctors yet', 'Ask your manager to add a doctor first', 'warning');
       }
     }
+  }
+
+  function enterAsReception(name, staffId = null) {
+    store.loginReception(name, staffId);
+    notifications.toast('Welcome', name + ' — Reception desk ready', 'success');
+    window.location.hash = '#/reception';
+  }
+
+  function showReceptionSelectGate() {
+    root.querySelector('#role-select')?.classList.add('hidden');
+    root.querySelector('#pin-gate')?.classList.add('hidden');
+    const gate = root.querySelector('#doctor-select-gate');
+    gate.classList.remove('hidden');
+    root.querySelector('#doctor-select-title').textContent = 'Welcome';
+    root.querySelector('#doctor-select-subtitle').textContent = 'Please select your name to continue.';
+    const list = root.querySelector('#doctor-select-list');
+    const staff = store.getActiveReceptionStaff();
+    list.innerHTML = staff.map(s => `
+      <button data-select-staff="${s.id}" data-select-staff-name="${escapeHtml(s.name)}" class="w-full flex items-center gap-3 p-3 rounded-xl border border-slate-200 dark:border-slate-800 hover:border-sky-400 transition text-left">
+        <div class="w-10 h-10 rounded-xl bg-sky-50 dark:bg-sky-950 text-sky-600 dark:text-sky-400 flex items-center justify-center shrink-0">
+          ${icon('clipboard-list', 18)}
+        </div>
+        <div class="min-w-0">
+          <p class="font-semibold text-sm truncate">${escapeHtml(s.name)}</p>
+        </div>
+      </button>
+    `).join('');
+    list.querySelectorAll('[data-select-staff]').forEach(btn => {
+      btn.addEventListener('click', () => showIndividualPinGate(btn.dataset.selectStaff, btn.dataset.selectStaffName));
+    });
+  }
+
+  function showIndividualPinGate(staffId, name) {
+    root.querySelector('#role-select')?.classList.add('hidden');
+    root.querySelector('#doctor-select-gate')?.classList.add('hidden');
+    const gate = root.querySelector('#pin-gate');
+    gate.classList.remove('hidden');
+    gate.dataset.mode = 'individual';
+    gate.dataset.staffId = staffId;
+    gate.dataset.staffName = name;
+    root.querySelector('#pin-gate-title').textContent = `Enter PIN — ${name}`;
+    root.querySelector('#pin-input').value = '';
+    root.querySelector('#pin-error').classList.add('hidden');
+    root.querySelector('#pin-input')?.focus();
   }
 
   function enterAsDoctor(doctorId) {
@@ -2229,6 +2424,7 @@ function renderLogin(root) {
     root.querySelector('#doctor-select-gate')?.classList.add('hidden');
     const gate = root.querySelector('#pin-gate');
     gate.classList.remove('hidden');
+    gate.dataset.mode = 'hospital';
     gate.dataset.role = role;
     root.querySelector('#pin-gate-title').textContent = role === 'doctor' ? 'Enter Doctor PIN' : role === 'manager' ? 'Enter Manager PIN' : 'Enter Reception PIN';
     root.querySelector('#pin-input').value = '';
@@ -2238,7 +2434,7 @@ function renderLogin(root) {
 
   async function submitPin() {
     const gate = root.querySelector('#pin-gate');
-    const role = gate.dataset.role;
+    const mode = gate.dataset.mode || 'hospital';
     const pin = root.querySelector('#pin-input').value.trim();
     const label = root.querySelector('#btn-pin-label');
     const btn = root.querySelector('#btn-pin-submit');
@@ -2247,7 +2443,26 @@ function renderLogin(root) {
     if (!pin) return;
     btn.disabled = true;
     label.innerHTML = `${icon('loader-2', 16, 'animate-spin')} Checking…`;
+
     try {
+      if (mode === 'individual') {
+        const staffId = gate.dataset.staffId;
+        const staffName = gate.dataset.staffName;
+        const { data, error } = await sb.rpc('verify_individual_pin', {
+          p_staff_id: staffId,
+          p_pin: pin,
+        });
+        btn.disabled = false;
+        label.textContent = 'Unlock';
+        if (error || !data) {
+          err.classList.remove('hidden');
+          return;
+        }
+        enterAsReception(staffName, staffId);
+        return;
+      }
+
+      const role = gate.dataset.role;
       const { data, error } = await sb.rpc('verify_staff_pin', {
         p_hospital_code: store.getState().hospitalCode,
         p_role: role,
@@ -2275,7 +2490,9 @@ function renderLogin(root) {
   });
 
   // If a dedicated reception/doctor/manager link was opened and hospital already resolved, act now
-  if (hasHospital && (PENDING_ROLE === 'reception' || PENDING_ROLE === 'doctor' || PENDING_ROLE === 'manager')) {
+  if (hasHospital && PENDING_ROLE === 'reception') {
+    enterStaffRole('reception'); // internally handles named-staff-select vs shared-PIN fallback
+  } else if (hasHospital && (PENDING_ROLE === 'doctor' || PENDING_ROLE === 'manager')) {
     if (isPinUnlocked(PENDING_ROLE)) {
       enterStaffRole(PENDING_ROLE);
     } else {
@@ -2752,7 +2969,7 @@ function renderReception(root) {
                   <label class="text-xs font-medium text-slate-500 mb-1 block">Doctor</label>
                   <select id="register-doctor" name="doctorId" required
                     class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent text-sm outline-none focus:ring-2 focus:ring-brand-500 transition">
-                    ${state.doctors.map(d => `<option value="${d.id}" ${d.id === selectedDoctorId ? 'selected' : ''}>${escapeHtml(d.name)} — ${escapeHtml(d.specialty)}</option>`).join('')}
+                    ${store.getActiveDoctors().map(d => `<option value="${d.id}" ${d.id === selectedDoctorId ? 'selected' : ''}>${escapeHtml(d.name)} — ${escapeHtml(d.specialty)}</option>`).join('')}
                   </select>
                 </div>
                 <div>
@@ -3094,11 +3311,15 @@ function renderManager(root) {
     const state = store.getState();
     const pendingAppointments = store.getPendingAppointments();
     const resolvedAppointments = state.appointments.filter(a => a.status !== 'pending').slice(0, 20);
+    const activeDocs = state.doctors.filter(d => d.active !== false);
+    const inactiveDocs = state.doctors.filter(d => d.active === false);
 
     const TABS = [
-      { id: 'doctors', label: 'Doctors', icon: 'stethoscope', badge: state.doctors.length },
+      { id: 'doctors', label: 'Doctors', icon: 'stethoscope', badge: activeDocs.length },
+      { id: 'staff', label: 'Reception Staff', icon: 'users', badge: store.getActiveReceptionStaff().length || null },
       { id: 'appointments', label: 'Appointments', icon: 'calendar-clock', badge: pendingAppointments.length },
       { id: 'reports', label: 'Reports', icon: 'bar-chart-3', badge: null },
+      { id: 'settings', label: 'Settings', icon: 'settings', badge: null },
     ];
 
     root.innerHTML = `
@@ -3125,17 +3346,31 @@ function renderManager(root) {
 
         ${activeTab === 'doctors' ? `
           <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card p-5">
-            <h2 class="font-display font-bold text-base mb-4">Doctors (${state.doctors.length})</h2>
+            <h2 class="font-display font-bold text-base mb-4">Doctors (${activeDocs.length})</h2>
             <div class="space-y-2 mb-4">
-              ${state.doctors.length === 0 ? `<p class="text-sm text-slate-400 text-center py-6">No doctors added yet.</p>` : state.doctors.map(d => {
+              ${activeDocs.length === 0 ? `<p class="text-sm text-slate-400 text-center py-6">No doctors added yet.</p>` : activeDocs.map(d => {
                 const dSnap = queueEngine.getSnapshot(d.id);
                 return `
-                  <div class="flex items-center justify-between gap-2 p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60">
-                    <div class="min-w-0">
-                      <p class="text-sm font-semibold truncate">${escapeHtml(d.name)}</p>
-                      <p class="text-[11px] text-slate-500 truncate">${escapeHtml(d.specialty)} · ${dSnap.totalWaiting} waiting · ${dSnap.totalSeen} seen today</p>
+                  <div class="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60" data-doctor-row="${d.id}">
+                    <div class="flex items-center justify-between gap-2">
+                      <div class="min-w-0 flex-1">
+                        <p class="text-sm font-semibold truncate">${escapeHtml(d.name)}</p>
+                        <p class="text-[11px] text-slate-500 truncate">${escapeHtml(d.specialty)} · ${dSnap.totalWaiting} waiting · ${dSnap.totalSeen} seen today</p>
+                      </div>
+                      ${doctorStatusBadge(d.status)}
                     </div>
-                    ${doctorStatusBadge(d.status)}
+                    <div class="flex gap-2 mt-2.5">
+                      <button data-action="edit-doctor" data-doctor-id="${d.id}" class="text-xs px-2.5 py-1 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:border-rose-400 transition">Edit</button>
+                      <button data-action="deactivate-doctor" data-doctor-id="${d.id}" class="text-xs px-2.5 py-1 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-rose-600 hover:border-rose-400 transition">Deactivate</button>
+                    </div>
+                    <form data-edit-form="${d.id}" class="hidden mt-2.5 space-y-2">
+                      <input name="name" value="${escapeHtml(d.name)}" required class="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent text-sm outline-none focus:ring-2 focus:ring-rose-500 transition" />
+                      <input name="specialty" value="${escapeHtml(d.specialty)}" class="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent text-sm outline-none focus:ring-2 focus:ring-rose-500 transition" />
+                      <div class="flex gap-2">
+                        <button type="submit" class="flex-1 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold transition">Save</button>
+                        <button type="button" data-action="cancel-edit-doctor" class="flex-1 py-2 rounded-xl bg-slate-200 dark:bg-slate-700 text-xs font-semibold transition">Cancel</button>
+                      </div>
+                    </form>
                   </div>
                 `;
               }).join('')}
@@ -3152,6 +3387,52 @@ function renderManager(root) {
                 Add Doctor
               </button>
             </form>
+          </div>
+
+          ${inactiveDocs.length ? `
+            <div class="rounded-2xl bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 p-5 mt-4">
+              <h2 class="font-display font-bold text-sm text-slate-500 uppercase tracking-wider mb-3">Deactivated Doctors</h2>
+              <div class="space-y-2">
+                ${inactiveDocs.map(d => `
+                  <div class="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-white dark:bg-slate-900">
+                    <span class="text-sm text-slate-500">${escapeHtml(d.name)} · ${escapeHtml(d.specialty || '')}</span>
+                    <button data-action="reactivate-doctor" data-doctor-id="${d.id}" class="text-xs px-2.5 py-1 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 transition">Reactivate</button>
+                  </div>
+                `).join('')}
+              </div>
+            </div>
+          ` : ''}
+        ` : ''}
+
+        ${activeTab === 'staff' ? `
+          <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card p-5">
+            <h2 class="font-display font-bold text-base mb-1">Reception Staff</h2>
+            <p class="text-xs text-slate-500 mb-4">Add as many named staff logins as you need. Each gets their own PIN, so you can see who registered or updated each patient.</p>
+            <div class="space-y-2 mb-4">
+              ${state.receptionStaff.length === 0 ? `<p class="text-sm text-slate-400 text-center py-6">No named staff yet — the shared Reception PIN is used until you add someone here.</p>` : state.receptionStaff.map(s => `
+                <div class="flex items-center justify-between gap-2 p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60">
+                  <div class="min-w-0 flex-1">
+                    <p class="text-sm font-semibold truncate">${escapeHtml(s.name)}</p>
+                    <p class="text-[11px] ${s.active ? 'text-emerald-600' : 'text-slate-400'}">${s.active ? 'Active' : 'Deactivated'}</p>
+                  </div>
+                  <div class="flex gap-2 shrink-0">
+                    <button data-action="reset-staff-pin" data-staff-id="${s.id}" data-staff-name="${escapeHtml(s.name)}" class="text-xs px-2.5 py-1 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:border-rose-400 transition">Reset PIN</button>
+                    <button data-action="${s.active ? 'deactivate-staff' : 'reactivate-staff'}" data-staff-id="${s.id}" class="text-xs px-2.5 py-1 rounded-lg ${s.active ? 'bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-rose-600' : 'bg-emerald-600 text-white'} transition">${s.active ? 'Deactivate' : 'Reactivate'}</button>
+                  </div>
+                </div>
+              `).join('')}
+            </div>
+            <button type="button" data-action="toggle-add-staff" class="w-full py-2.5 rounded-xl border border-dashed border-slate-300 dark:border-slate-700 text-sm font-medium text-slate-600 dark:text-slate-400 hover:border-rose-400 hover:text-rose-600 transition flex items-center justify-center gap-1.5">
+              ${icon('plus', 16)} Add Reception Staff
+            </button>
+            <form id="add-staff-form" class="hidden mt-3 space-y-2">
+              <input name="name" required placeholder="Staff name (e.g. Priya)"
+                class="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent text-sm outline-none focus:ring-2 focus:ring-rose-500 transition" />
+              <button type="submit" class="w-full py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-semibold text-sm shadow-soft transition active:scale-[0.98]">
+                Add Staff
+              </button>
+            </form>
+            <div id="new-staff-pin-box" class="hidden mt-3 p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 text-sm"></div>
           </div>
         ` : ''}
 
@@ -3235,11 +3516,78 @@ function renderManager(root) {
             ` : !reportData.ok ? `
               <p class="text-sm text-rose-500 text-center py-8">${reportData.error}</p>
             ` : `
+              <div class="flex justify-end">
+                <button data-action="export-csv" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-rose-400 transition">
+                  ${icon('download', 13)} Export CSV
+                </button>
+              </div>
+
               <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
                 ${metricCard('Total Patients', reportData.totals.totalPatients, reportMode === 'range' ? `${formatDate(reportFrom)} – ${formatDate(reportTo)}` : `last ${reportDays} days`, 'teal')}
                 ${metricCard('Completed', reportData.totals.totalCompleted, 'consultations', 'slate')}
                 ${metricCard('No-shows', reportData.totals.totalNoShow, '', 'amber')}
                 ${metricCard('Emergency', reportData.totals.totalEmergency, 'priority cases', 'rose')}
+              </div>
+
+              <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card p-5">
+                <h2 class="font-display font-bold text-sm mb-3 flex items-center gap-2">${icon('star', 15, 'text-amber-500')} Patient Feedback</h2>
+                ${reportData.feedback.count === 0 ? `<p class="text-sm text-slate-400 text-center py-4">No feedback submitted yet in this period.</p>` : `
+                  <div class="flex items-center gap-4 mb-4">
+                    <div class="text-center">
+                      <p class="font-display text-3xl font-bold text-amber-500">${reportData.feedback.avgRating}</p>
+                      <p class="text-[11px] text-slate-500">avg / 5</p>
+                    </div>
+                    <div class="flex-1 space-y-1">
+                      ${[5,4,3,2,1].map(n => {
+                        const count = reportData.feedback.ratingCounts[n-1];
+                        const pct = reportData.feedback.count ? Math.round((count / reportData.feedback.count) * 100) : 0;
+                        return `
+                          <div class="flex items-center gap-2 text-[11px]">
+                            <span class="w-6 text-slate-500">${n}★</span>
+                            <div class="flex-1 h-1.5 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
+                              <div class="h-full bg-amber-400" style="width:${pct}%"></div>
+                            </div>
+                            <span class="w-6 text-right text-slate-400">${count}</span>
+                          </div>
+                        `;
+                      }).join('')}
+                    </div>
+                  </div>
+                  <div class="space-y-2 max-h-56 overflow-y-auto">
+                    ${reportData.feedback.entries.filter(f => f.comment).slice(0, 15).map(f => `
+                      <div class="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 text-sm">
+                        <div class="flex items-center justify-between mb-1">
+                          <span class="font-medium">${escapeHtml(f.patient_name || 'Patient')}</span>
+                          <span class="text-amber-500 text-xs">${'★'.repeat(f.rating)}${'☆'.repeat(5 - f.rating)}</span>
+                        </div>
+                        <p class="text-xs text-slate-600 dark:text-slate-400">${escapeHtml(f.comment)}</p>
+                      </div>
+                    `).join('') || `<p class="text-xs text-slate-400 text-center py-2">No written comments in this period.</p>`}
+                  </div>
+                `}
+              </div>
+
+              <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card p-5">
+                <h2 class="font-display font-bold text-sm mb-3 flex items-center gap-2">${icon('clock', 15, 'text-brand-600')} Peak Hours</h2>
+                ${reportData.totals.totalPatients === 0 ? `<p class="text-sm text-slate-400 text-center py-4">No data yet.</p>` : `
+                  <div class="space-y-1.5">
+                    ${reportData.peakHours.filter(h => h.count > 0).slice(0, 8).map(h => {
+                      const maxCount = reportData.peakHours[0]?.count || 1;
+                      const pct = Math.round((h.count / maxCount) * 100);
+                      const label = h.hour === 0 ? '12 AM' : h.hour < 12 ? `${h.hour} AM` : h.hour === 12 ? '12 PM' : `${h.hour - 12} PM`;
+                      return `
+                        <div class="flex items-center gap-2 text-xs">
+                          <span class="w-12 text-slate-500">${label}</span>
+                          <div class="flex-1 h-2 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
+                            <div class="h-full bg-gradient-to-r from-brand-500 to-teal-400" style="width:${pct}%"></div>
+                          </div>
+                          <span class="w-6 text-right text-slate-400">${h.count}</span>
+                        </div>
+                      `;
+                    }).join('')}
+                  </div>
+                  <p class="text-[11px] text-slate-400 mt-3">Based on when patients were registered. Use this to plan extra staff during your busiest hours.</p>
+                `}
               </div>
 
               <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card overflow-hidden">
@@ -3273,6 +3621,28 @@ function renderManager(root) {
                 </div>
               </div>
             `}
+          </div>
+        ` : ''}
+
+        ${activeTab === 'settings' ? `
+          <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card p-5">
+            <h2 class="font-display font-bold text-base mb-1">Reset Shared PINs</h2>
+            <p class="text-xs text-slate-500 mb-4">Generates a brand-new PIN and replaces the old one immediately. Share the new PIN with your staff — the old one stops working right away.</p>
+            <div class="space-y-3">
+              <div class="flex items-center justify-between gap-3 p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60">
+                <span class="text-sm font-medium">Reception PIN <span class="text-[10px] text-slate-400">(used when no named staff are set up)</span></span>
+                <button data-action="reset-hospital-pin" data-role="reception" class="text-xs px-3 py-1.5 rounded-lg bg-sky-600 text-white hover:bg-sky-700 transition shrink-0">Reset</button>
+              </div>
+              <div class="flex items-center justify-between gap-3 p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60">
+                <span class="text-sm font-medium">Doctor PIN</span>
+                <button data-action="reset-hospital-pin" data-role="doctor" class="text-xs px-3 py-1.5 rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition shrink-0">Reset</button>
+              </div>
+              <div class="flex items-center justify-between gap-3 p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60">
+                <span class="text-sm font-medium">Manager PIN <span class="text-[10px] text-rose-500">(this logs you out below)</span></span>
+                <button data-action="reset-hospital-pin" data-role="manager" class="text-xs px-3 py-1.5 rounded-lg bg-rose-600 text-white hover:bg-rose-700 transition shrink-0">Reset</button>
+              </div>
+            </div>
+            <div id="pin-reset-result" class="hidden mt-4 p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 text-sm"></div>
           </div>
         ` : ''}
       </main>
@@ -3313,6 +3683,36 @@ function renderManager(root) {
       loadReport();
     });
 
+    root.querySelector('[data-action="export-csv"]')?.addEventListener('click', () => {
+      if (!reportData || !reportData.ok) return;
+      const headers = ['Date', 'Token', 'Patient Name', 'Phone', 'Doctor', 'Status', 'Emergency'];
+      const lines = [headers.join(',')];
+      reportData.rawRows.forEach(r => {
+        const doc = store.getDoctor(r.doctor_id);
+        const row = [
+          r.day,
+          r.token,
+          `"${(r.name || '').replace(/"/g, '""')}"`,
+          r.phone,
+          `"${(doc ? doc.name : 'Unknown').replace(/"/g, '""')}"`,
+          r.status,
+          r.is_emergency ? 'Yes' : 'No',
+        ];
+        lines.push(row.join(','));
+      });
+      const csv = lines.join('\n');
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${(store.getState().hospitalCode || 'hospital')}_report_${reportData.range.from}_to_${reportData.range.to}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      notifications.toast('Exported', 'CSV file downloaded', 'success');
+    });
+
     root.querySelector('[data-action="toggle-add-doctor"]')?.addEventListener('click', () => {
       root.querySelector('#add-doctor-form')?.classList.toggle('hidden');
     });
@@ -3336,6 +3736,115 @@ function renderManager(root) {
       } else {
         notifications.toast('Error', res.error, 'error');
       }
+    });
+
+    root.querySelectorAll('[data-action="edit-doctor"]').forEach(b => {
+      b.addEventListener('click', () => {
+        root.querySelector(`[data-edit-form="${b.dataset.doctorId}"]`)?.classList.remove('hidden');
+      });
+    });
+    root.querySelectorAll('[data-action="cancel-edit-doctor"]').forEach(b => {
+      b.addEventListener('click', (e) => {
+        e.target.closest('form')?.classList.add('hidden');
+      });
+    });
+    root.querySelectorAll('[data-edit-form]').forEach(form => {
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const fd = new FormData(e.target);
+        const btn = e.target.querySelector('button[type="submit"]');
+        btn.disabled = true;
+        const res = await store.updateDoctor(form.dataset.editForm, { name: fd.get('name'), specialty: fd.get('specialty') });
+        btn.disabled = false;
+        if (res.ok) {
+          notifications.toast('Updated', 'Doctor details saved', 'success');
+          paint();
+        } else {
+          notifications.toast('Error', res.error, 'error');
+        }
+      });
+    });
+    root.querySelectorAll('[data-action="deactivate-doctor"]').forEach(b => {
+      b.addEventListener('click', async () => {
+        if (!confirm('Deactivate this doctor? They will no longer appear for new patients, but history is kept.')) return;
+        const res = await store.setDoctorActive(b.dataset.doctorId, false);
+        if (res.ok) { notifications.toast('Doctor deactivated', '', 'info'); paint(); }
+        else notifications.toast('Error', res.error, 'error');
+      });
+    });
+    root.querySelectorAll('[data-action="reactivate-doctor"]').forEach(b => {
+      b.addEventListener('click', async () => {
+        const res = await store.setDoctorActive(b.dataset.doctorId, true);
+        if (res.ok) { notifications.toast('Doctor reactivated', '', 'success'); paint(); }
+        else notifications.toast('Error', res.error, 'error');
+      });
+    });
+
+    root.querySelector('[data-action="toggle-add-staff"]')?.addEventListener('click', () => {
+      root.querySelector('#add-staff-form')?.classList.toggle('hidden');
+    });
+    root.querySelector('#add-staff-form')?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const name = fd.get('name');
+      if (!name) return;
+      const btn = e.target.querySelector('button[type="submit"]');
+      btn.disabled = true;
+      btn.textContent = 'Adding…';
+      const res = await store.addReceptionStaff(name);
+      btn.disabled = false;
+      btn.textContent = 'Add Staff';
+      if (res.ok) {
+        e.target.reset();
+        const box = root.querySelector('#new-staff-pin-box');
+        box.classList.remove('hidden');
+        box.innerHTML = `<strong>${escapeHtml(res.staff.name)}</strong>'s PIN: <span class="font-mono font-bold">${res.pin}</span><br><span class="text-[11px] text-slate-500">Save this now — it won't be shown again.</span>`;
+        paint();
+      } else {
+        notifications.toast('Error', res.error, 'error');
+      }
+    });
+    root.querySelectorAll('[data-action="reset-staff-pin"]').forEach(b => {
+      b.addEventListener('click', async () => {
+        if (!confirm(`Reset the PIN for ${b.dataset.staffName}? Their old PIN will stop working.`)) return;
+        const res = await store.resetReceptionStaffPin(b.dataset.staffId);
+        if (res.ok) {
+          const box = root.querySelector('#new-staff-pin-box');
+          box.classList.remove('hidden');
+          box.innerHTML = `New PIN for <strong>${escapeHtml(b.dataset.staffName)}</strong>: <span class="font-mono font-bold">${res.pin}</span><br><span class="text-[11px] text-slate-500">Save this now — it won't be shown again.</span>`;
+        } else {
+          notifications.toast('Error', res.error, 'error');
+        }
+      });
+    });
+    root.querySelectorAll('[data-action="deactivate-staff"]').forEach(b => {
+      b.addEventListener('click', async () => {
+        const res = await store.setReceptionStaffActive(b.dataset.staffId, false);
+        if (res.ok) { notifications.toast('Staff deactivated', '', 'info'); paint(); }
+        else notifications.toast('Error', res.error, 'error');
+      });
+    });
+    root.querySelectorAll('[data-action="reactivate-staff"]').forEach(b => {
+      b.addEventListener('click', async () => {
+        const res = await store.setReceptionStaffActive(b.dataset.staffId, true);
+        if (res.ok) { notifications.toast('Staff reactivated', '', 'success'); paint(); }
+        else notifications.toast('Error', res.error, 'error');
+      });
+    });
+
+    root.querySelectorAll('[data-action="reset-hospital-pin"]').forEach(b => {
+      b.addEventListener('click', async () => {
+        const role = b.dataset.role;
+        if (!confirm(`Reset the shared ${role} PIN? The old PIN will stop working immediately.`)) return;
+        const res = await store.resetHospitalPin(role);
+        const box = root.querySelector('#pin-reset-result');
+        if (res.ok) {
+          box.classList.remove('hidden');
+          box.innerHTML = `New ${role} PIN: <span class="font-mono font-bold">${res.pin}</span><br><span class="text-[11px] text-slate-500">Save this now — it won't be shown again.</span>`;
+        } else {
+          notifications.toast('Error', res.error, 'error');
+        }
+      });
     });
   };
 
@@ -3930,9 +4439,13 @@ function isPinUnlocked(role) {
 function autoEnterRole() {
   if (!store.getState().hospitalId) return false;
   if (PENDING_ROLE === 'reception' && isPinUnlocked('reception')) {
-    store.loginReception();
-    window.location.hash = '#/reception';
-    return true;
+    const staff = store.getState().receptionStaff.filter(s => s.active !== false);
+    if (staff.length === 0) {
+      store.loginReception();
+      window.location.hash = '#/reception';
+      return true;
+    }
+    return false; // named staff exist — let renderLogin show the name-select screen
   }
   if (PENDING_ROLE === 'doctor' && isPinUnlocked('doctor')) {
     const doctors = store.getState().doctors;
