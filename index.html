@@ -1287,17 +1287,25 @@ class Store {
   }
 
   // ---------- Reports (Manager) ----------
-  async getReportData(days = 30) {
+  async getReportData({ days = 30, fromDate = null, toDate = null } = {}) {
     try {
-      const since = new Date();
-      since.setDate(since.getDate() - (days - 1));
-      const sinceStr = since.toISOString().slice(0, 10);
+      let sinceStr, untilStr;
+      if (fromDate) {
+        sinceStr = fromDate;
+        untilStr = toDate || fromDate;
+      } else {
+        const since = new Date();
+        since.setDate(since.getDate() - (days - 1));
+        sinceStr = since.toISOString().slice(0, 10);
+        untilStr = todayKey();
+      }
 
       const { data, error } = await sb
         .from('patients')
         .select('day, status, doctor_id, is_emergency')
         .eq('hospital_id', this.state.hospitalId)
         .gte('day', sinceStr)
+        .lte('day', untilStr)
         .order('day', { ascending: false });
 
       if (error) throw error;
@@ -3071,9 +3079,14 @@ function renderManager(root) {
   let activeTab = 'doctors'; // doctors | appointments | reports
   let reportData = null;
   let reportDays = 30;
+  let reportMode = 'days'; // 'days' | 'range'
+  let reportFrom = null;
+  let reportTo = null;
 
   async function loadReport() {
-    reportData = await store.getReportData(reportDays);
+    reportData = reportMode === 'range'
+      ? await store.getReportData({ fromDate: reportFrom, toDate: reportTo })
+      : await store.getReportData({ days: reportDays });
     paint();
   }
 
@@ -3190,12 +3203,31 @@ function renderManager(root) {
 
         ${activeTab === 'reports' ? `
           <div class="space-y-4">
-            <div class="flex gap-2">
+            <div class="flex gap-2 flex-wrap">
               ${[7, 30, 90].map(d => `
-                <button data-report-days="${d}" class="px-3 py-1.5 rounded-lg text-xs font-medium transition ${reportDays === d ? 'bg-rose-600 text-white' : 'bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-600'}">
+                <button data-report-days="${d}" class="px-3 py-1.5 rounded-lg text-xs font-medium transition ${reportMode === 'days' && reportDays === d ? 'bg-rose-600 text-white' : 'bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-600'}">
                   Last ${d} days
                 </button>
               `).join('')}
+            </div>
+
+            <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card p-4">
+              <p class="text-xs font-medium text-slate-500 mb-2">Or pick a custom date range</p>
+              <div class="flex flex-wrap items-end gap-2">
+                <div>
+                  <label class="text-[11px] text-slate-400 block mb-1">From</label>
+                  <input id="report-from" type="date" value="${reportFrom || ''}" max="${todayKey()}"
+                    class="px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent text-sm outline-none focus:ring-2 focus:ring-rose-500 transition" />
+                </div>
+                <div>
+                  <label class="text-[11px] text-slate-400 block mb-1">To</label>
+                  <input id="report-to" type="date" value="${reportTo || ''}" max="${todayKey()}"
+                    class="px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent text-sm outline-none focus:ring-2 focus:ring-rose-500 transition" />
+                </div>
+                <button data-action="apply-report-range" class="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-sm font-semibold transition">
+                  View
+                </button>
+              </div>
             </div>
 
             ${!reportData ? `
@@ -3204,7 +3236,7 @@ function renderManager(root) {
               <p class="text-sm text-rose-500 text-center py-8">${reportData.error}</p>
             ` : `
               <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
-                ${metricCard('Total Patients', reportData.totals.totalPatients, `last ${reportDays} days`, 'teal')}
+                ${metricCard('Total Patients', reportData.totals.totalPatients, reportMode === 'range' ? `${formatDate(reportFrom)} – ${formatDate(reportTo)}` : `last ${reportDays} days`, 'teal')}
                 ${metricCard('Completed', reportData.totals.totalCompleted, 'consultations', 'slate')}
                 ${metricCard('No-shows', reportData.totals.totalNoShow, '', 'amber')}
                 ${metricCard('Emergency', reportData.totals.totalEmergency, 'priority cases', 'rose')}
@@ -3258,11 +3290,27 @@ function renderManager(root) {
 
     root.querySelectorAll('[data-report-days]').forEach(b => {
       b.addEventListener('click', () => {
+        reportMode = 'days';
         reportDays = Number(b.dataset.reportDays);
         reportData = null;
         paint();
         loadReport();
       });
+    });
+
+    root.querySelector('[data-action="apply-report-range"]')?.addEventListener('click', () => {
+      const from = root.querySelector('#report-from')?.value;
+      const to = root.querySelector('#report-to')?.value;
+      if (!from) {
+        notifications.toast('Pick a date', 'Select at least a "From" date', 'warning');
+        return;
+      }
+      reportMode = 'range';
+      reportFrom = from;
+      reportTo = to || from;
+      reportData = null;
+      paint();
+      loadReport();
     });
 
     root.querySelector('[data-action="toggle-add-doctor"]')?.addEventListener('click', () => {
