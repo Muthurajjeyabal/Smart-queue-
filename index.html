@@ -514,6 +514,8 @@ function createInitialState() {
     doctors: [], // array of { id, name, specialty, avgConsultMin, status, currentPatientId, consultStartedAt, totalSeenToday, pauseReason, doctorStatusId, nextToken }
     // All patients for today (and history)
     patients: [],
+    // Appointment requests from the Patient app, awaiting Reception approval
+    appointments: [],
     // Active queue order (patient ids in sequence, across all doctors — reception overview)
     queue: [], // array of patient ids that are waiting or consulting
     // Notifications log (for patient history of alerts)
@@ -549,6 +551,25 @@ function mapPatientRow(r) {
     consultEndedAt: r.consult_ended_at,
     doctorId: r.doctor_id,
     hospitalId: r.hospital_id,
+  };
+}
+
+function mapAppointmentRow(r) {
+  return {
+    id: r.id,
+    hospitalId: r.hospital_id,
+    doctorId: r.doctor_id,
+    name: r.patient_name,
+    phone: r.patient_phone,
+    age: r.age,
+    gender: r.gender,
+    preferredDate: r.preferred_date,
+    preferredTime: r.preferred_time,
+    notes: r.notes || '',
+    status: r.status,
+    createdAt: r.created_at,
+    resolvedPatientId: r.resolved_patient_id,
+    resolvedAt: r.resolved_at,
   };
 }
 
@@ -716,6 +737,15 @@ class Store {
 
     this.state.patients = (patientRows || []).map(mapPatientRow);
 
+    // Load appointment requests (pending + recent resolved, so patients can see status)
+    const { data: apptRows } = await sb
+      .from('appointments')
+      .select('*')
+      .eq('hospital_id', hospital.id)
+      .order('created_at', { ascending: false })
+      .limit(200);
+    this.state.appointments = (apptRows || []).map(mapAppointmentRow);
+
     // Reconcile each doctor's next token with actual max token issued (safety net)
     this.state.doctors.forEach(doc => {
       const maxToken = this.state.patients
@@ -784,7 +814,24 @@ class Store {
         (payload) => this._handlePatientChange(payload))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'doctor_status', filter: `hospital_id=eq.${this.state.hospitalId}` },
         (payload) => this._handleDoctorStatusChange(payload))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'appointments', filter: `hospital_id=eq.${this.state.hospitalId}` },
+        (payload) => this._handleAppointmentChange(payload))
       .subscribe();
+  }
+
+  _handleAppointmentChange(payload) {
+    if (payload.eventType === 'DELETE') {
+      this.state.appointments = this.state.appointments.filter(a => a.id !== payload.old.id);
+    } else {
+      const a = mapAppointmentRow(payload.new);
+      const idx = this.state.appointments.findIndex(x => x.id === a.id);
+      const isNew = idx < 0;
+      if (idx >= 0) this.state.appointments[idx] = a; else this.state.appointments.unshift(a);
+      if (isNew && a.status === 'pending') {
+        bus.emit('appointment:new', a);
+      }
+    }
+    this.notify();
   }
 
   _handlePatientChange(payload) {
@@ -936,7 +983,7 @@ class Store {
   }
 
   // ---------- Patient registration & tokens ----------
-  registerWalkIn({ name, phone, isEmergency = false, notes = '', doctorId }) {
+  registerWalkIn({ name, phone, isEmergency = false, notes = '', doctorId, isAppointment = false }) {
     const doc = this.getDoctor(doctorId);
     if (!doc) throw new Error('A doctor must be selected to register a patient');
     const cleanPhone = String(phone).replace(/\D/g, '').slice(-10);
@@ -949,7 +996,7 @@ class Store {
       token,
       status: 'waiting',
       isEmergency: !!isEmergency,
-      isAppointment: false,
+      isAppointment: !!isAppointment,
       notes,
       createdAt: new Date().toISOString(),
       consultStartedAt: null,
@@ -966,12 +1013,93 @@ class Store {
     return patient;
   }
 
-  bookAppointment({ name, phone, preferredTime, doctorId }) {
-    // For V1 same as walk-in but tagged
-    const p = this.registerWalkIn({ name, phone, isEmergency: false, notes: preferredTime ? `Preferred: ${preferredTime}` : '', doctorId });
-    p.isAppointment = true;
-    this.notify();
-    return p;
+  // ---------- Appointment requests (Patient → Reception approval) ----------
+  async requestAppointment({ name, phone, age, gender, doctorId, preferredDate, preferredTime, notes }) {
+    const doc = this.getDoctor(doctorId);
+    if (!doc) return { ok: false, error: 'Please choose a doctor' };
+    const cleanPhone = String(phone).replace(/\D/g, '').slice(-10);
+    if (cleanPhone.length !== 10) return { ok: false, error: 'Enter a valid 10-digit mobile number' };
+    if (!name || !name.trim()) return { ok: false, error: 'Enter the patient name' };
+
+    try {
+      const { data, error } = await sb.from('appointments').insert({
+        hospital_id: this.state.hospitalId,
+        doctor_id: doctorId,
+        patient_name: name.trim(),
+        patient_phone: cleanPhone,
+        age: age ? Number(age) : null,
+        gender: gender || null,
+        preferred_date: preferredDate || null,
+        preferred_time: preferredTime || null,
+        notes: notes || '',
+        status: 'pending',
+      }).select().single();
+      if (error || !data) throw error || new Error('Insert failed');
+      const appt = mapAppointmentRow(data);
+      this.state.appointments.unshift(appt);
+      this.notify();
+      return { ok: true, appointment: appt };
+    } catch (e) {
+      console.error(e);
+      return { ok: false, error: 'Could not send request. Check your connection.' };
+    }
+  }
+
+  getAppointmentsForPhone(phone) {
+    const clean = String(phone).replace(/\D/g, '').slice(-10);
+    return this.state.appointments
+      .filter(a => a.phone === clean)
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  }
+
+  getPendingAppointments() {
+    return this.state.appointments
+      .filter(a => a.status === 'pending')
+      .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+  }
+
+  async approveAppointment(appointmentId) {
+    const appt = this.state.appointments.find(a => a.id === appointmentId);
+    if (!appt) return { ok: false, error: 'Request not found' };
+    try {
+      const patient = this.registerWalkIn({
+        name: appt.name,
+        phone: appt.phone,
+        isEmergency: false,
+        isAppointment: true,
+        notes: [appt.preferredDate, appt.preferredTime].filter(Boolean).join(' '),
+        doctorId: appt.doctorId,
+      });
+      await sb.from('appointments').update({
+        status: 'approved',
+        resolved_patient_id: patient.id,
+        resolved_at: new Date().toISOString(),
+      }).eq('id', appointmentId);
+      appt.status = 'approved';
+      appt.resolvedPatientId = patient.id;
+      this.notify();
+      return { ok: true, patient };
+    } catch (e) {
+      console.error(e);
+      return { ok: false, error: 'Could not approve request' };
+    }
+  }
+
+  async rejectAppointment(appointmentId) {
+    const appt = this.state.appointments.find(a => a.id === appointmentId);
+    if (!appt) return { ok: false, error: 'Request not found' };
+    try {
+      await sb.from('appointments').update({
+        status: 'rejected',
+        resolved_at: new Date().toISOString(),
+      }).eq('id', appointmentId);
+      appt.status = 'rejected';
+      this.notify();
+      return { ok: true };
+    } catch (e) {
+      console.error(e);
+      return { ok: false, error: 'Could not reject request' };
+    }
   }
 
   getPatient(id) {
@@ -2140,6 +2268,7 @@ function renderPatient(root) {
   }
 
   let selectedPatientId = null;
+  let currentPatient = null;
 
   const paint = () => {
     const state = store.getState();
@@ -2149,10 +2278,12 @@ function renderPatient(root) {
       selectedPatientId = (activeOne || familyPatients[familyPatients.length - 1])?.id || null;
     }
     const patient = familyPatients.find(p => p.id === selectedPatientId) || null;
+    currentPatient = patient;
     const snap = patient ? queueEngine.getSnapshot(patient.doctorId) : queueEngine.getSnapshot(null);
     const doctorInfo = patient ? store.getDoctor(patient.doctorId) : null;
     const eta = patient ? queueEngine.getEtaForPatient(patient.id) : null;
     const history = store.getHistoryForPhone(session.phone);
+    const myAppointments = store.getAppointmentsForPhone(session.phone).filter(a => a.status !== 'approved');
 
     const hasActive = patient && (patient.status === 'waiting' || patient.status === 'consulting');
     const feedbackDone = patient && localStorage.getItem(`shq_feedback_${patient.id}`) === '1';
@@ -2191,6 +2322,9 @@ function renderPatient(root) {
               ${t('noActiveTokenDesc')}
             </p>
           </div>
+          <button data-action="open-appointment" class="w-full flex items-center justify-center gap-2 py-3.5 rounded-xl bg-violet-600 hover:bg-violet-700 text-white font-semibold text-sm shadow-soft transition active:scale-[0.98]">
+            ${icon('calendar-plus', 18)} Book an Appointment
+          </button>
         ` : `
           <!-- Token Hero Card -->
           <div class="relative overflow-hidden rounded-3xl bg-gradient-to-br from-brand-600 via-teal-600 to-teal-800 text-white p-6 shadow-glow">
@@ -2220,6 +2354,10 @@ function renderPatient(root) {
               ${icon('map-pin', 16)} ${t('directions')}
             </a>
           </div>
+
+          <button data-action="open-appointment" class="w-full flex items-center justify-center gap-2 py-3 rounded-xl border border-dashed border-violet-300 dark:border-violet-800 text-violet-700 dark:text-violet-300 font-medium text-sm hover:bg-violet-50 dark:hover:bg-violet-950/30 transition">
+            ${icon('calendar-plus', 16)} Book Your Next Appointment
+          </button>
 
           ${hasActive ? `
             <!-- Live Status -->
@@ -2311,6 +2449,33 @@ function renderPatient(root) {
           ` : ''}
         `}
 
+        ${myAppointments.length ? `
+          <section>
+            <h3 class="font-display font-semibold text-sm text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-3 px-1">My Appointment Requests</h3>
+            <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card divide-y divide-slate-100 dark:divide-slate-800 overflow-hidden">
+              ${myAppointments.map(a => {
+                const doc = store.getDoctor(a.doctorId);
+                const badgeCls = a.status === 'pending' ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200'
+                  : a.status === 'approved' ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200'
+                  : 'bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-200';
+                const badgeLabel = a.status === 'pending' ? 'Pending' : a.status === 'approved' ? 'Confirmed' : 'Declined';
+                return `
+                  <div class="flex items-center gap-3 p-3.5">
+                    <div class="w-10 h-10 rounded-xl bg-violet-50 dark:bg-violet-950 text-violet-600 dark:text-violet-400 flex items-center justify-center shrink-0">
+                      ${icon('calendar-clock', 16)}
+                    </div>
+                    <div class="flex-1 min-w-0">
+                      <p class="text-sm font-medium truncate">${doc ? escapeHtml(doc.name) : 'Doctor'}</p>
+                      <p class="text-xs text-slate-500">${a.preferredDate ? formatDate(a.preferredDate) : ''} ${a.preferredTime ? '· ' + escapeHtml(a.preferredTime) : ''}</p>
+                    </div>
+                    <span class="badge ${badgeCls}">${badgeLabel}</span>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+          </section>
+        ` : ''}
+
         <!-- History -->
         <section>
           <h3 class="font-display font-semibold text-sm text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-3 px-1">${t('appointmentHistory')}</h3>
@@ -2381,6 +2546,11 @@ function renderPatient(root) {
 
   // Actions
   root.addEventListener('click', async (e) => {
+    const openApptBtn = e.target.closest('[data-action="open-appointment"]');
+    if (openApptBtn) {
+      showAppointmentModal({ phone: session.phone, name: currentPatient?.name || '' });
+      return;
+    }
     const selectBtn = e.target.closest('[data-select-patient]');
     if (selectBtn) {
       selectedPatientId = selectBtn.dataset.selectPatient;
@@ -2463,6 +2633,8 @@ function renderReception(root) {
       ? store.searchPatients(searchQ)
       : store.getState().patients.filter(p => p.day === state.day).sort((a, b) => b.token - a.token);
 
+    const pendingAppointments = store.getPendingAppointments();
+
     root.innerHTML = `
       ${headerBar({
         title: 'Reception Desk',
@@ -2488,6 +2660,34 @@ function renderReception(root) {
           ${metricCard('Seen Today', overview.totalSeen, 'across all doctors', 'slate')}
           ${metricCard('Total Patients', filtered.filter(p => p.day === state.day).length, 'today', 'rose')}
         </div>
+
+        ${pendingAppointments.length ? `
+          <div class="rounded-2xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 shadow-card p-5 mb-6">
+            <h2 class="font-display font-bold text-base mb-4 flex items-center gap-2 text-amber-800 dark:text-amber-200">
+              ${icon('calendar-clock', 18)} Appointment Requests
+              <span class="text-xs font-bold bg-amber-500 text-white px-2 py-0.5 rounded-full">${pendingAppointments.length}</span>
+            </h2>
+            <div class="space-y-2.5">
+              ${pendingAppointments.map(a => {
+                const doc = store.getDoctor(a.doctorId);
+                return `
+                <div class="flex flex-col sm:flex-row sm:items-center gap-3 p-3 rounded-xl bg-white dark:bg-slate-900 border border-amber-200/60 dark:border-amber-800/60">
+                  <div class="flex-1 min-w-0">
+                    <p class="font-semibold text-sm">${escapeHtml(a.name)} ${a.age ? `<span class="text-slate-400 font-normal">· ${a.age}${a.gender ? ', ' + escapeHtml(a.gender) : ''}</span>` : ''}</p>
+                    <p class="text-xs text-slate-500 mt-0.5">${a.phone} · Wants: <span class="font-medium text-slate-700 dark:text-slate-300">${doc ? escapeHtml(doc.name) : 'Any doctor'}</span></p>
+                    <p class="text-xs text-slate-500">${a.preferredDate ? formatDate(a.preferredDate) : ''} ${a.preferredTime ? '· ' + escapeHtml(a.preferredTime) : ''}</p>
+                    ${a.notes ? `<p class="text-[11px] text-slate-400 mt-0.5">${escapeHtml(a.notes)}</p>` : ''}
+                  </div>
+                  <div class="flex gap-2 shrink-0">
+                    <button data-appt-action="approve" data-appt-id="${a.id}" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-700 transition">Accept</button>
+                    <button data-appt-action="reject" data-appt-id="${a.id}" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-300 dark:hover:bg-slate-600 transition">Decline</button>
+                  </div>
+                </div>
+              `;
+              }).join('')}
+            </div>
+          </div>
+        ` : ''}
 
         <div class="grid lg:grid-cols-5 gap-6">
           <div class="lg:col-span-2 space-y-4">
@@ -2674,9 +2874,12 @@ function renderReception(root) {
   paint();
   reception_unsub = store.subscribe(paint);
   bus.on('queue:updated', paint);
+  bus.on('appointment:new', (a) => {
+    notifications.toast('New appointment request', `${a.name} · ${a.phone}`, 'info');
+  });
 
-  root.addEventListener('click', (e) => {
-    const btn = e.target.closest('[data-action], [data-status]');
+  root.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-action], [data-status], [data-appt-action]');
     if (!btn) return;
     if (btn.dataset.action === 'logout') {
       store.logout('reception');
@@ -2693,6 +2896,132 @@ function renderReception(root) {
       store.setPatientStatus(btn.dataset.id, btn.dataset.status);
       notifications.toast('Status updated', 'Marked as ' + btn.dataset.status.replace('_', ' '), 'info');
     }
+    if (btn.dataset.apptAction === 'approve' && btn.dataset.apptId) {
+      btn.disabled = true;
+      const res = await store.approveAppointment(btn.dataset.apptId);
+      if (res.ok) notifications.toast('Appointment accepted', 'Token #' + res.patient.token + ' issued to ' + res.patient.name, 'success');
+      else notifications.toast('Error', res.error, 'error');
+    }
+    if (btn.dataset.apptAction === 'reject' && btn.dataset.apptId) {
+      btn.disabled = true;
+      const res = await store.rejectAppointment(btn.dataset.apptId);
+      if (res.ok) notifications.toast('Request declined', '', 'info');
+      else notifications.toast('Error', res.error, 'error');
+    }
+  });
+}
+
+function showAppointmentModal({ phone, name }) {
+  const state = store.getState();
+  const doctors = state.doctors;
+  const todayStr = todayKey();
+
+  const overlay = document.createElement('div');
+  overlay.id = 'appt-modal-overlay';
+  overlay.className = 'fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-sm px-0 sm:px-4';
+  overlay.innerHTML = `
+    <div class="bg-white dark:bg-slate-900 rounded-t-2xl sm:rounded-2xl shadow-2xl max-w-sm w-full p-6 relative animate-slide-up max-h-[90vh] overflow-y-auto">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="font-display font-bold text-lg flex items-center gap-2">${icon('calendar-plus', 18)} Book Appointment</h3>
+        <button data-action="close-appt" class="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition">${icon('x', 18)}</button>
+      </div>
+      ${!doctors.length ? `
+        <p class="text-sm text-slate-500 py-6 text-center">This hospital hasn't added any doctors yet. Please check back later.</p>
+      ` : `
+        <form id="appt-form" class="space-y-3">
+          <div>
+            <label class="text-xs font-medium text-slate-500 mb-1 block">Full Name</label>
+            <input name="name" required value="${escapeHtml(name || '')}" placeholder="Patient name"
+              class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent text-sm outline-none focus:ring-2 focus:ring-violet-500 transition" />
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="text-xs font-medium text-slate-500 mb-1 block">Age</label>
+              <input name="age" type="number" min="0" max="120" placeholder="Age"
+                class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent text-sm outline-none focus:ring-2 focus:ring-violet-500 transition" />
+            </div>
+            <div>
+              <label class="text-xs font-medium text-slate-500 mb-1 block">Gender</label>
+              <select name="gender" class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent text-sm outline-none focus:ring-2 focus:ring-violet-500 transition">
+                <option value="">Select</option>
+                <option value="Male">Male</option>
+                <option value="Female">Female</option>
+                <option value="Other">Other</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <label class="text-xs font-medium text-slate-500 mb-1 block">Doctor</label>
+            <select name="doctorId" required class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent text-sm outline-none focus:ring-2 focus:ring-violet-500 transition">
+              ${doctors.map(d => `<option value="${d.id}">${escapeHtml(d.name)} — ${escapeHtml(d.specialty)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="text-xs font-medium text-slate-500 mb-1 block">Preferred Date</label>
+              <input name="preferredDate" type="date" min="${todayStr}" value="${todayStr}"
+                class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent text-sm outline-none focus:ring-2 focus:ring-violet-500 transition" />
+            </div>
+            <div>
+              <label class="text-xs font-medium text-slate-500 mb-1 block">Preferred Time</label>
+              <input name="preferredTime" type="time"
+                class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent text-sm outline-none focus:ring-2 focus:ring-violet-500 transition" />
+            </div>
+          </div>
+          <div>
+            <label class="text-xs font-medium text-slate-500 mb-1 block">Notes (optional)</label>
+            <input name="notes" placeholder="Reason for visit / remarks"
+              class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent text-sm outline-none focus:ring-2 focus:ring-violet-500 transition" />
+          </div>
+          <button type="submit" class="w-full py-3 rounded-xl bg-violet-600 hover:bg-violet-700 text-white font-semibold text-sm shadow-soft transition active:scale-[0.98] flex items-center justify-center gap-2">
+            <span id="appt-submit-label">Send Request</span>
+          </button>
+          <p id="appt-error" class="text-xs text-rose-500 text-center hidden"></p>
+        </form>
+      `}
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  refreshIcons();
+
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay || e.target.closest('[data-action="close-appt"]')) {
+      overlay.remove();
+    }
+  });
+
+  overlay.querySelector('#appt-form')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const btn = e.target.querySelector('button[type="submit"]');
+    const label = overlay.querySelector('#appt-submit-label');
+    const err = overlay.querySelector('#appt-error');
+    err.classList.add('hidden');
+    btn.disabled = true;
+    label.innerHTML = `${icon('loader-2', 16, 'animate-spin')} Sending…`;
+
+    const res = await store.requestAppointment({
+      name: fd.get('name'),
+      phone,
+      age: fd.get('age'),
+      gender: fd.get('gender'),
+      doctorId: fd.get('doctorId'),
+      preferredDate: fd.get('preferredDate'),
+      preferredTime: fd.get('preferredTime'),
+      notes: fd.get('notes'),
+    });
+
+    btn.disabled = false;
+    label.textContent = 'Send Request';
+
+    if (!res.ok) {
+      err.textContent = res.error;
+      err.classList.remove('hidden');
+      return;
+    }
+
+    overlay.remove();
+    notifications.toast('Request sent', "You'll be notified once the hospital confirms", 'success');
   });
 }
 
