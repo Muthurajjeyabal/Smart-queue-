@@ -2274,8 +2274,8 @@ function renderLogin(root) {
     if (e.key === 'Enter') submitPin();
   });
 
-  // If a dedicated reception/doctor link was opened and hospital already resolved, act now
-  if (hasHospital && (PENDING_ROLE === 'reception' || PENDING_ROLE === 'doctor')) {
+  // If a dedicated reception/doctor/manager link was opened and hospital already resolved, act now
+  if (hasHospital && (PENDING_ROLE === 'reception' || PENDING_ROLE === 'doctor' || PENDING_ROLE === 'manager')) {
     if (isPinUnlocked(PENDING_ROLE)) {
       enterStaffRole(PENDING_ROLE);
     } else {
