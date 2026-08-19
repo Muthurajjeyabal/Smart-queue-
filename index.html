@@ -4,6 +4,17 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Smart Hospital Queue</title>
+
+  <!-- PWA -->
+  <link rel="manifest" href="manifest.json" />
+  <meta name="theme-color" content="#0d9488" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="SHQ" />
+  <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+  <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
+
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { height: 100%; font-family: system-ui, -apple-system, sans-serif; }
@@ -118,20 +129,46 @@ body {
 
 /* Card hover lift */
 .card-interactive {
-  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.card-interactive:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 24px -8px rgba(15, 23, 42, 0.12);
 }
 .card-interactive:active {
-  transform: scale(0.98);
+  transform: scale(0.98) translateY(0);
+  transition-duration: 0.1s;
+}
+
+/* Buttons — universal smooth press feedback */
+button {
+  transition: transform 0.15s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s ease, opacity 0.2s ease, background-color 0.2s ease, border-color 0.2s ease;
+}
+button:active:not(:disabled) {
+  transform: scale(0.96);
 }
 
 /* Status badges */
 .badge {
   @apply inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold tracking-wide;
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 /* Smooth page transitions */
 .view-enter {
-  animation: slide-up 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: view-fade-slide 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@keyframes view-fade-slide {
+  from { opacity: 0; transform: translateY(10px) scale(0.99); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.animate-slide-up {
+  animation: slide-up-premium 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@keyframes slide-up-premium {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 /* Number countdown */
@@ -140,6 +177,11 @@ body {
   min-width: 1.15em;
   display: inline-block;
   text-align: center;
+}
+.token-display {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.03em;
+  transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 /* Glass effect */
@@ -150,6 +192,63 @@ body {
 }
 .dark .glass {
   background: rgba(15, 23, 42, 0.75);
+}
+
+/* Shimmer loading skeleton */
+.skeleton {
+  background: linear-gradient(90deg, rgba(148,163,184,0.15) 25%, rgba(148,163,184,0.28) 37%, rgba(148,163,184,0.15) 63%);
+  background-size: 400% 100%;
+  animation: shimmer 1.4s ease infinite;
+  border-radius: 0.75rem;
+}
+.dark .skeleton {
+  background: linear-gradient(90deg, rgba(51,65,85,0.4) 25%, rgba(71,85,105,0.55) 37%, rgba(51,65,85,0.4) 63%);
+  background-size: 400% 100%;
+}
+@keyframes shimmer {
+  0% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+/* Smooth shadow system */
+.shadow-card {
+  box-shadow: 0 1px 2px rgba(15,23,42,0.04), 0 4px 16px -4px rgba(15,23,42,0.06);
+  transition: box-shadow 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.shadow-glow {
+  box-shadow: 0 8px 30px -6px rgba(13, 148, 136, 0.35);
+}
+.shadow-soft {
+  box-shadow: 0 4px 14px -3px rgba(15,23,42,0.15);
+  transition: box-shadow 0.25s ease, transform 0.15s ease;
+}
+
+/* Toast entrance */
+#toast-container > * {
+  animation: toast-in 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+@keyframes toast-in {
+  from { opacity: 0; transform: translateX(24px) scale(0.95); }
+  to { opacity: 1; transform: translateX(0) scale(1); }
+}
+
+/* Modal entrance */
+[id$="-modal-overlay"] {
+  animation: overlay-fade 0.25s ease both;
+}
+@keyframes overlay-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Tab underline / active state smoothness */
+[data-tab], [data-role] {
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Progress bars smooth fill */
+.h-2.rounded-full > div, .h-1\.5.rounded-full > div {
+  transition: width 0.6s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 /* Progress ring */
@@ -164,6 +263,14 @@ input[type=number]::-webkit-outer-spin-button {
   margin: 0;
 }
 
+/* Inputs — smooth focus */
+input, select, textarea {
+  transition: box-shadow 0.2s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.2s ease, transform 0.15s ease;
+}
+input:focus, select:focus, textarea:focus {
+  transform: translateY(-1px);
+}
+
 /* Focus rings */
 button:focus-visible,
 input:focus-visible,
@@ -175,6 +282,44 @@ select:focus-visible {
 /* Mobile bottom nav safe area */
 .bottom-nav {
   padding-bottom: max(0.75rem, var(--safe-bottom));
+}
+
+/* ============================================================
+   Responsive polish — desktop / tablet / mobile
+   ============================================================ */
+
+/* Desktop: subtle ambient background so wide screens don't look flat/empty */
+@media (min-width: 1024px) {
+  body {
+    background:
+      radial-gradient(circle at 15% 10%, rgba(20, 184, 166, 0.05), transparent 42%),
+      radial-gradient(circle at 85% 85%, rgba(139, 92, 246, 0.04), transparent 42%),
+      #f8fafc;
+  }
+  .dark body {
+    background:
+      radial-gradient(circle at 15% 10%, rgba(20, 184, 166, 0.09), transparent 42%),
+      radial-gradient(circle at 85% 85%, rgba(139, 92, 246, 0.07), transparent 42%),
+      #020617;
+  }
+}
+
+/* Tablet/desktop: a touch more breathing room + slightly larger type */
+@media (min-width: 768px) {
+  .font-display { letter-spacing: -0.01em; }
+}
+@media (min-width: 1280px) {
+  main { padding-top: 0.5rem; }
+}
+
+/* Large screens: cap toast width sensibly and keep it from feeling cramped */
+@media (min-width: 1024px) {
+  #toast-container { max-width: 26rem; }
+}
+
+/* Tablet: role/login cards get a touch more padding for comfortable tapping */
+@media (min-width: 640px) and (max-width: 1023px) {
+  .role-card { padding: 1.125rem; }
 }
 
 /* Print / accessibility */
@@ -4567,6 +4712,10 @@ async function boot() {
     var bar = document.getElementById('splash-bar');
     if (bar) bar.style.width = '60%';
     initTheme();
+
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('sw.js').catch(() => {});
+    }
 
     // Resolve hospital: URL param (?h=CODE for patient QR links) takes priority, else remembered device hospital
     const hash = window.location.hash || '#/';
