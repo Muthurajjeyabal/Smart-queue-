@@ -525,6 +525,7 @@ function createInitialState() {
       patient: null, // { phone, patientId }
       reception: null, // { name }
       doctor: null, // { doctorId }
+      manager: null, // { name }
     },
     // Settings
     settings: {
@@ -968,6 +969,12 @@ class Store {
     return { ok: true };
   }
 
+  loginManager(name = 'Manager') {
+    this.state.sessions.manager = { name };
+    this.notify();
+    return { ok: true };
+  }
+
   loginDoctor(doctorId) {
     if (!this.getDoctor(doctorId)) return { ok: false, error: 'Doctor not found' };
     this.state.sessions.doctor = { doctorId };
@@ -979,6 +986,7 @@ class Store {
     if (role === 'patient') this.state.sessions.patient = null;
     if (role === 'reception') this.state.sessions.reception = null;
     if (role === 'doctor') this.state.sessions.doctor = null;
+    if (role === 'manager') this.state.sessions.manager = null;
     this.notify();
   }
 
@@ -1276,6 +1284,56 @@ class Store {
     return this.state.patients
       .filter(p => p.phone === clean)
       .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  }
+
+  // ---------- Reports (Manager) ----------
+  async getReportData(days = 30) {
+    try {
+      const since = new Date();
+      since.setDate(since.getDate() - (days - 1));
+      const sinceStr = since.toISOString().slice(0, 10);
+
+      const { data, error } = await sb
+        .from('patients')
+        .select('day, status, doctor_id, is_emergency')
+        .eq('hospital_id', this.state.hospitalId)
+        .gte('day', sinceStr)
+        .order('day', { ascending: false });
+
+      if (error) throw error;
+      const rows = data || [];
+
+      const byDay = {};
+      const byDoctor = {};
+      let totalCompleted = 0, totalNoShow = 0, totalCancelled = 0, totalEmergency = 0;
+
+      rows.forEach(r => {
+        if (!byDay[r.day]) byDay[r.day] = { day: r.day, total: 0, completed: 0, noShow: 0, cancelled: 0 };
+        byDay[r.day].total++;
+        if (r.status === 'completed') { byDay[r.day].completed++; totalCompleted++; }
+        if (r.status === 'no_show') { byDay[r.day].noShow++; totalNoShow++; }
+        if (r.status === 'cancelled') { byDay[r.day].cancelled++; totalCancelled++; }
+        if (r.is_emergency) totalEmergency++;
+
+        const docId = r.doctor_id || 'unknown';
+        if (!byDoctor[docId]) byDoctor[docId] = { doctorId: docId, total: 0, completed: 0 };
+        byDoctor[docId].total++;
+        if (r.status === 'completed') byDoctor[docId].completed++;
+      });
+
+      return {
+        ok: true,
+        days: Object.values(byDay).sort((a, b) => b.day.localeCompare(a.day)),
+        doctors: Object.values(byDoctor).sort((a, b) => b.total - a.total),
+        totals: {
+          totalPatients: rows.length,
+          totalCompleted, totalNoShow, totalCancelled, totalEmergency,
+        },
+      };
+    } catch (e) {
+      console.error(e);
+      return { ok: false, error: 'Could not load report data' };
+    }
   }
 
   // Seed demo data if empty
@@ -1852,6 +1910,7 @@ const ROLE_BRANDING = {
   doctor: { title: 'Doctor', tagline: 'Welcome Doctor — consultation & queue control', icon: 'stethoscope', gradient: 'from-violet-500 to-purple-700', accent: 'violet', ring: 'focus:ring-violet-500', btn: 'bg-violet-600 hover:bg-violet-700', chip: 'bg-violet-50 dark:bg-violet-950 text-violet-700 dark:text-violet-300 border-violet-200 dark:border-violet-800' },
   reception: { title: 'Reception Desk', tagline: 'Register patients & manage the queue', icon: 'clipboard-list', gradient: 'from-sky-500 to-blue-700', accent: 'sky', ring: 'focus:ring-sky-500', btn: 'bg-sky-600 hover:bg-sky-700', chip: 'bg-sky-50 dark:bg-sky-950 text-sky-700 dark:text-sky-300 border-sky-200 dark:border-sky-800' },
   patient: { title: 'My Queue', tagline: "We'll track your token live — no waiting room needed", icon: 'smartphone', gradient: 'from-emerald-500 to-teal-600', accent: 'emerald', ring: 'focus:ring-emerald-500', btn: 'bg-emerald-600 hover:bg-emerald-700', chip: 'bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800' },
+  manager: { title: 'Hospital Manager', tagline: 'Doctors, appointments & reports', icon: 'briefcase', gradient: 'from-rose-500 to-orange-600', accent: 'rose', ring: 'focus:ring-rose-500', btn: 'bg-rose-600 hover:bg-rose-700', chip: 'bg-rose-50 dark:bg-rose-950 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800' },
 };
 const DEFAULT_BRANDING = { title: 'Smart Hospital Queue', tagline: 'Live digital tokens · Accurate ETA · Zero long waits', icon: 'clock', gradient: 'from-brand-500 to-teal-600', accent: 'brand', ring: 'focus:ring-brand-500', btn: 'bg-brand-600 hover:bg-brand-700', chip: 'bg-brand-50 dark:bg-brand-950 text-brand-700 dark:text-brand-300 border-brand-200 dark:border-brand-800' };
 
@@ -1949,6 +2008,17 @@ function renderLogin(root) {
               <div class="flex-1">
                 <p class="font-semibold">Doctor</p>
                 <p class="text-xs text-slate-500 dark:text-slate-400">Control consultation & queue flow</p>
+              </div>
+              ${icon('chevron-right', 18, 'text-slate-300 group-hover:text-brand-500 transition')}
+            </button>
+
+            <button data-role="manager" class="role-card w-full group flex items-center gap-4 p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card hover:border-brand-400 dark:hover:border-brand-600 transition card-interactive text-left">
+              <div class="w-12 h-12 rounded-xl bg-rose-50 dark:bg-rose-950 text-rose-600 dark:text-rose-400 flex items-center justify-center group-hover:scale-105 transition">
+                ${icon('briefcase', 22)}
+              </div>
+              <div class="flex-1">
+                <p class="font-semibold">Manager</p>
+                <p class="text-xs text-slate-500 dark:text-slate-400">Doctors, appointments & reports</p>
               </div>
               ${icon('chevron-right', 18, 'text-slate-300 group-hover:text-brand-500 transition')}
             </button>
@@ -2096,6 +2166,10 @@ function renderLogin(root) {
       store.loginReception();
       notifications.toast('Welcome', 'Reception desk ready', 'success');
       window.location.hash = '#/reception';
+    } else if (role === 'manager') {
+      store.loginManager();
+      notifications.toast('Welcome', 'Manager dashboard ready', 'success');
+      window.location.hash = '#/manager';
     } else if (role === 'doctor') {
       const doctors = store.getState().doctors;
       if (doctors.length === 1) {
@@ -2103,7 +2177,7 @@ function renderLogin(root) {
       } else if (doctors.length > 1) {
         showDoctorSelectGate();
       } else {
-        notifications.toast('No doctors yet', 'Ask reception to add a doctor first', 'warning');
+        notifications.toast('No doctors yet', 'Ask your manager to add a doctor first', 'warning');
       }
     }
   }
@@ -2148,7 +2222,7 @@ function renderLogin(root) {
     const gate = root.querySelector('#pin-gate');
     gate.classList.remove('hidden');
     gate.dataset.role = role;
-    root.querySelector('#pin-gate-title').textContent = role === 'doctor' ? 'Enter Doctor PIN' : 'Enter Reception PIN';
+    root.querySelector('#pin-gate-title').textContent = role === 'doctor' ? 'Enter Doctor PIN' : role === 'manager' ? 'Enter Manager PIN' : 'Enter Reception PIN';
     root.querySelector('#pin-input').value = '';
     root.querySelector('#pin-error').classList.add('hidden');
     root.querySelector('#pin-input')?.focus();
@@ -2209,7 +2283,7 @@ function renderLogin(root) {
         root.querySelector('#role-select').classList.add('hidden');
         root.querySelector('#patient-login').classList.remove('hidden');
         root.querySelector('#phone-input')?.focus();
-      } else if (role === 'reception' || role === 'doctor') {
+      } else if (role === 'reception' || role === 'doctor' || role === 'manager') {
         if (isPinUnlocked(role)) {
           enterStaffRole(role);
         } else {
@@ -2633,8 +2707,6 @@ function renderReception(root) {
       ? store.searchPatients(searchQ)
       : store.getState().patients.filter(p => p.day === state.day).sort((a, b) => b.token - a.token);
 
-    const pendingAppointments = store.getPendingAppointments();
-
     root.innerHTML = `
       ${headerBar({
         title: 'Reception Desk',
@@ -2660,34 +2732,6 @@ function renderReception(root) {
           ${metricCard('Seen Today', overview.totalSeen, 'across all doctors', 'slate')}
           ${metricCard('Total Patients', filtered.filter(p => p.day === state.day).length, 'today', 'rose')}
         </div>
-
-        ${pendingAppointments.length ? `
-          <div class="rounded-2xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 shadow-card p-5 mb-6">
-            <h2 class="font-display font-bold text-base mb-4 flex items-center gap-2 text-amber-800 dark:text-amber-200">
-              ${icon('calendar-clock', 18)} Appointment Requests
-              <span class="text-xs font-bold bg-amber-500 text-white px-2 py-0.5 rounded-full">${pendingAppointments.length}</span>
-            </h2>
-            <div class="space-y-2.5">
-              ${pendingAppointments.map(a => {
-                const doc = store.getDoctor(a.doctorId);
-                return `
-                <div class="flex flex-col sm:flex-row sm:items-center gap-3 p-3 rounded-xl bg-white dark:bg-slate-900 border border-amber-200/60 dark:border-amber-800/60">
-                  <div class="flex-1 min-w-0">
-                    <p class="font-semibold text-sm">${escapeHtml(a.name)} ${a.age ? `<span class="text-slate-400 font-normal">· ${a.age}${a.gender ? ', ' + escapeHtml(a.gender) : ''}</span>` : ''}</p>
-                    <p class="text-xs text-slate-500 mt-0.5">${a.phone} · Wants: <span class="font-medium text-slate-700 dark:text-slate-300">${doc ? escapeHtml(doc.name) : 'Any doctor'}</span></p>
-                    <p class="text-xs text-slate-500">${a.preferredDate ? formatDate(a.preferredDate) : ''} ${a.preferredTime ? '· ' + escapeHtml(a.preferredTime) : ''}</p>
-                    ${a.notes ? `<p class="text-[11px] text-slate-400 mt-0.5">${escapeHtml(a.notes)}</p>` : ''}
-                  </div>
-                  <div class="flex gap-2 shrink-0">
-                    <button data-appt-action="approve" data-appt-id="${a.id}" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-700 transition">Accept</button>
-                    <button data-appt-action="reject" data-appt-id="${a.id}" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-300 dark:hover:bg-slate-600 transition">Decline</button>
-                  </div>
-                </div>
-              `;
-              }).join('')}
-            </div>
-          </div>
-        ` : ''}
 
         <div class="grid lg:grid-cols-5 gap-6">
           <div class="lg:col-span-2 space-y-4">
@@ -2725,40 +2769,7 @@ function renderReception(root) {
                 <button type="submit" ${!state.doctors.length ? 'disabled' : ''} class="w-full py-3 rounded-xl bg-brand-600 hover:bg-brand-700 disabled:opacity-40 text-white font-semibold text-sm shadow-soft transition active:scale-[0.98] flex items-center justify-center gap-2">
                   ${icon('ticket', 18)} Issue Digital Token
                 </button>
-                ${!state.doctors.length ? `<p class="text-xs text-rose-500 text-center">Add a doctor below before registering patients.</p>` : ''}
-              </form>
-            </div>
-
-            <!-- Manage Doctors -->
-            <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card p-5">
-              <h2 class="font-display font-bold text-base mb-4 flex items-center gap-2">
-                ${icon('stethoscope', 18, 'text-violet-600')} Doctors (${state.doctors.length})
-              </h2>
-              <div class="space-y-2 mb-4">
-                ${state.doctors.map(d => {
-                  const dSnap = queueEngine.getSnapshot(d.id);
-                  return `
-                    <div class="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/60">
-                      <div class="min-w-0">
-                        <p class="text-sm font-semibold truncate">${escapeHtml(d.name)}</p>
-                        <p class="text-[11px] text-slate-500 truncate">${escapeHtml(d.specialty)} · ${dSnap.totalWaiting} waiting</p>
-                      </div>
-                      ${doctorStatusBadge(d.status)}
-                    </div>
-                  `;
-                }).join('')}
-              </div>
-              <button type="button" data-action="toggle-add-doctor" class="w-full py-2.5 rounded-xl border border-dashed border-slate-300 dark:border-slate-700 text-sm font-medium text-slate-600 dark:text-slate-400 hover:border-brand-400 hover:text-brand-600 transition flex items-center justify-center gap-1.5">
-                ${icon('plus', 16)} Add Doctor
-              </button>
-              <form id="add-doctor-form" class="hidden mt-3 space-y-2">
-                <input name="name" required placeholder="Doctor name (e.g. Dr. Kumar)"
-                  class="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent text-sm outline-none focus:ring-2 focus:ring-brand-500 transition" />
-                <input name="specialty" placeholder="Specialty (e.g. Cardiologist)"
-                  class="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent text-sm outline-none focus:ring-2 focus:ring-brand-500 transition" />
-                <button type="submit" class="w-full py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 text-white font-semibold text-sm shadow-soft transition active:scale-[0.98]">
-                  Add Doctor
-                </button>
+                ${!state.doctors.length ? `<p class="text-xs text-rose-500 text-center">No doctors set up yet. Ask your Manager to add one.</p>` : ''}
               </form>
             </div>
 
@@ -2844,42 +2855,14 @@ function renderReception(root) {
       notifications.toast('Token #' + p.token + ' issued', p.name + (isEmergency ? ' · Emergency priority' : ' · Added to queue'), 'success');
       e.target.reset();
     });
-
-    root.querySelector('[data-action="toggle-add-doctor"]')?.addEventListener('click', () => {
-      root.querySelector('#add-doctor-form')?.classList.toggle('hidden');
-    });
-
-    root.querySelector('#add-doctor-form')?.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const fd = new FormData(e.target);
-      const name = fd.get('name');
-      const specialty = fd.get('specialty');
-      if (!name) return;
-      const btn = e.target.querySelector('button[type="submit"]');
-      btn.disabled = true;
-      btn.textContent = 'Adding…';
-      const res = await store.addDoctor(name, specialty);
-      btn.disabled = false;
-      btn.textContent = 'Add Doctor';
-      if (res.ok) {
-        notifications.toast('Doctor added', res.doctor.name + ' can now receive patients', 'success');
-        e.target.reset();
-        paint();
-      } else {
-        notifications.toast('Error', res.error, 'error');
-      }
-    });
   };
 
   paint();
   reception_unsub = store.subscribe(paint);
   bus.on('queue:updated', paint);
-  bus.on('appointment:new', (a) => {
-    notifications.toast('New appointment request', `${a.name} · ${a.phone}`, 'info');
-  });
 
   root.addEventListener('click', async (e) => {
-    const btn = e.target.closest('[data-action], [data-status], [data-appt-action]');
+    const btn = e.target.closest('[data-action], [data-status]');
     if (!btn) return;
     if (btn.dataset.action === 'logout') {
       store.logout('reception');
@@ -2895,18 +2878,6 @@ function renderReception(root) {
     if (btn.dataset.status && btn.dataset.id) {
       store.setPatientStatus(btn.dataset.id, btn.dataset.status);
       notifications.toast('Status updated', 'Marked as ' + btn.dataset.status.replace('_', ' '), 'info');
-    }
-    if (btn.dataset.apptAction === 'approve' && btn.dataset.apptId) {
-      btn.disabled = true;
-      const res = await store.approveAppointment(btn.dataset.apptId);
-      if (res.ok) notifications.toast('Appointment accepted', 'Token #' + res.patient.token + ' issued to ' + res.patient.name, 'success');
-      else notifications.toast('Error', res.error, 'error');
-    }
-    if (btn.dataset.apptAction === 'reject' && btn.dataset.apptId) {
-      btn.disabled = true;
-      const res = await store.rejectAppointment(btn.dataset.apptId);
-      if (res.ok) notifications.toast('Request declined', '', 'info');
-      else notifications.toast('Error', res.error, 'error');
     }
   });
 }
@@ -3086,6 +3057,272 @@ function showPatientQrModal() {
 function destroyReception() {
   if (reception_unsub) reception_unsub();
   reception_unsub = null;
+}
+
+let manager_unsub = null;
+
+function renderManager(root) {
+  const session = store.getState().sessions.manager;
+  if (!session || !store.getState().hospitalId) {
+    window.location.hash = '#/';
+    return;
+  }
+
+  let activeTab = 'doctors'; // doctors | appointments | reports
+  let reportData = null;
+  let reportDays = 30;
+
+  async function loadReport() {
+    reportData = await store.getReportData(reportDays);
+    paint();
+  }
+
+  const paint = () => {
+    const state = store.getState();
+    const pendingAppointments = store.getPendingAppointments();
+    const resolvedAppointments = state.appointments.filter(a => a.status !== 'pending').slice(0, 20);
+
+    const TABS = [
+      { id: 'doctors', label: 'Doctors', icon: 'stethoscope', badge: state.doctors.length },
+      { id: 'appointments', label: 'Appointments', icon: 'calendar-clock', badge: pendingAppointments.length },
+      { id: 'reports', label: 'Reports', icon: 'bar-chart-3', badge: null },
+    ];
+
+    root.innerHTML = `
+      ${headerBar({
+        title: 'Hospital Manager',
+        subtitle: state.hospitalName,
+        rightHtml: `
+          ${themeToggleBtn()}
+          <button data-action="logout" class="p-2 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+            ${icon('log-out', 18)}
+          </button>
+        `,
+      })}
+
+      <main class="flex-1 max-w-4xl mx-auto w-full px-4 sm:px-6 py-5 view-enter">
+        <div class="flex gap-2 mb-5 overflow-x-auto pb-1">
+          ${TABS.map(tb => `
+            <button data-tab="${tb.id}" class="shrink-0 flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium transition ${activeTab === tb.id ? 'bg-rose-600 text-white' : 'bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300'}">
+              ${icon(tb.icon, 15)} ${tb.label}
+              ${tb.badge ? `<span class="text-[10px] font-bold ${activeTab === tb.id ? 'bg-white/25' : 'bg-rose-500 text-white'} px-1.5 py-0.5 rounded-full">${tb.badge}</span>` : ''}
+            </button>
+          `).join('')}
+        </div>
+
+        ${activeTab === 'doctors' ? `
+          <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card p-5">
+            <h2 class="font-display font-bold text-base mb-4">Doctors (${state.doctors.length})</h2>
+            <div class="space-y-2 mb-4">
+              ${state.doctors.length === 0 ? `<p class="text-sm text-slate-400 text-center py-6">No doctors added yet.</p>` : state.doctors.map(d => {
+                const dSnap = queueEngine.getSnapshot(d.id);
+                return `
+                  <div class="flex items-center justify-between gap-2 p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60">
+                    <div class="min-w-0">
+                      <p class="text-sm font-semibold truncate">${escapeHtml(d.name)}</p>
+                      <p class="text-[11px] text-slate-500 truncate">${escapeHtml(d.specialty)} · ${dSnap.totalWaiting} waiting · ${dSnap.totalSeen} seen today</p>
+                    </div>
+                    ${doctorStatusBadge(d.status)}
+                  </div>
+                `;
+              }).join('')}
+            </div>
+            <button type="button" data-action="toggle-add-doctor" class="w-full py-2.5 rounded-xl border border-dashed border-slate-300 dark:border-slate-700 text-sm font-medium text-slate-600 dark:text-slate-400 hover:border-rose-400 hover:text-rose-600 transition flex items-center justify-center gap-1.5">
+              ${icon('plus', 16)} Add Doctor
+            </button>
+            <form id="add-doctor-form" class="hidden mt-3 space-y-2">
+              <input name="name" required placeholder="Doctor name (e.g. Dr. Kumar)"
+                class="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent text-sm outline-none focus:ring-2 focus:ring-rose-500 transition" />
+              <input name="specialty" placeholder="Specialty (e.g. Cardiologist)"
+                class="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent text-sm outline-none focus:ring-2 focus:ring-rose-500 transition" />
+              <button type="submit" class="w-full py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-semibold text-sm shadow-soft transition active:scale-[0.98]">
+                Add Doctor
+              </button>
+            </form>
+          </div>
+        ` : ''}
+
+        ${activeTab === 'appointments' ? `
+          <div class="space-y-4">
+            <div class="rounded-2xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 shadow-card p-5">
+              <h2 class="font-display font-bold text-base mb-4 flex items-center gap-2 text-amber-800 dark:text-amber-200">
+                Pending Requests
+                <span class="text-xs font-bold bg-amber-500 text-white px-2 py-0.5 rounded-full">${pendingAppointments.length}</span>
+              </h2>
+              ${pendingAppointments.length === 0 ? `<p class="text-sm text-amber-700/70 dark:text-amber-300/70 text-center py-4">No pending requests.</p>` : `
+                <div class="space-y-2.5">
+                  ${pendingAppointments.map(a => {
+                    const doc = store.getDoctor(a.doctorId);
+                    return `
+                    <div class="flex flex-col sm:flex-row sm:items-center gap-3 p-3 rounded-xl bg-white dark:bg-slate-900 border border-amber-200/60 dark:border-amber-800/60">
+                      <div class="flex-1 min-w-0">
+                        <p class="font-semibold text-sm">${escapeHtml(a.name)} ${a.age ? `<span class="text-slate-400 font-normal">· ${a.age}${a.gender ? ', ' + escapeHtml(a.gender) : ''}</span>` : ''}</p>
+                        <p class="text-xs text-slate-500 mt-0.5">${a.phone} · Wants: <span class="font-medium text-slate-700 dark:text-slate-300">${doc ? escapeHtml(doc.name) : 'Any doctor'}</span></p>
+                        <p class="text-xs text-slate-500">${a.preferredDate ? formatDate(a.preferredDate) : ''} ${a.preferredTime ? '· ' + escapeHtml(a.preferredTime) : ''}</p>
+                        ${a.notes ? `<p class="text-[11px] text-slate-400 mt-0.5">${escapeHtml(a.notes)}</p>` : ''}
+                      </div>
+                      <div class="flex gap-2 shrink-0">
+                        <button data-appt-action="approve" data-appt-id="${a.id}" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-700 transition">Accept</button>
+                        <button data-appt-action="reject" data-appt-id="${a.id}" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-300 dark:hover:bg-slate-600 transition">Decline</button>
+                      </div>
+                    </div>
+                  `;
+                  }).join('')}
+                </div>
+              `}
+            </div>
+
+            ${resolvedAppointments.length ? `
+              <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card p-5">
+                <h2 class="font-display font-bold text-sm text-slate-500 uppercase tracking-wider mb-3">Recent Decisions</h2>
+                <div class="space-y-2">
+                  ${resolvedAppointments.map(a => `
+                    <div class="flex items-center justify-between gap-2 text-sm p-2 rounded-lg bg-slate-50 dark:bg-slate-800/50">
+                      <span class="truncate">${escapeHtml(a.name)} · ${a.phone}</span>
+                      <span class="text-xs font-semibold ${a.status === 'approved' ? 'text-emerald-600' : 'text-rose-500'}">${a.status === 'approved' ? 'Accepted' : 'Declined'}</span>
+                    </div>
+                  `).join('')}
+                </div>
+              </div>
+            ` : ''}
+          </div>
+        ` : ''}
+
+        ${activeTab === 'reports' ? `
+          <div class="space-y-4">
+            <div class="flex gap-2">
+              ${[7, 30, 90].map(d => `
+                <button data-report-days="${d}" class="px-3 py-1.5 rounded-lg text-xs font-medium transition ${reportDays === d ? 'bg-rose-600 text-white' : 'bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-600'}">
+                  Last ${d} days
+                </button>
+              `).join('')}
+            </div>
+
+            ${!reportData ? `
+              <div class="text-center py-10 text-slate-400 text-sm">${icon('loader-2', 20, 'animate-spin mx-auto mb-2')} Loading report…</div>
+            ` : !reportData.ok ? `
+              <p class="text-sm text-rose-500 text-center py-8">${reportData.error}</p>
+            ` : `
+              <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                ${metricCard('Total Patients', reportData.totals.totalPatients, `last ${reportDays} days`, 'teal')}
+                ${metricCard('Completed', reportData.totals.totalCompleted, 'consultations', 'slate')}
+                ${metricCard('No-shows', reportData.totals.totalNoShow, '', 'amber')}
+                ${metricCard('Emergency', reportData.totals.totalEmergency, 'priority cases', 'rose')}
+              </div>
+
+              <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card overflow-hidden">
+                <div class="p-4 border-b border-slate-100 dark:border-slate-800">
+                  <h2 class="font-display font-bold text-sm">By Doctor</h2>
+                </div>
+                <div class="divide-y divide-slate-100 dark:divide-slate-800 max-h-64 overflow-y-auto">
+                  ${reportData.doctors.length === 0 ? `<p class="text-sm text-slate-400 text-center py-6">No data yet.</p>` : reportData.doctors.map(d => {
+                    const doc = store.getDoctor(d.doctorId);
+                    return `
+                      <div class="flex items-center justify-between p-3 text-sm">
+                        <span>${doc ? escapeHtml(doc.name) : 'Unknown doctor'}</span>
+                        <span class="text-slate-500">${d.completed}/${d.total} completed</span>
+                      </div>
+                    `;
+                  }).join('')}
+                </div>
+              </div>
+
+              <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card overflow-hidden">
+                <div class="p-4 border-b border-slate-100 dark:border-slate-800">
+                  <h2 class="font-display font-bold text-sm">By Day</h2>
+                </div>
+                <div class="divide-y divide-slate-100 dark:divide-slate-800 max-h-80 overflow-y-auto">
+                  ${reportData.days.length === 0 ? `<p class="text-sm text-slate-400 text-center py-6">No data yet.</p>` : reportData.days.map(d => `
+                    <div class="flex items-center justify-between p-3 text-sm">
+                      <span>${formatDate(d.day)}</span>
+                      <span class="text-slate-500">${d.total} total · ${d.completed} completed · ${d.noShow} no-show</span>
+                    </div>
+                  `).join('')}
+                </div>
+              </div>
+            `}
+          </div>
+        ` : ''}
+      </main>
+    `;
+
+    refreshIcons();
+
+    root.querySelectorAll('[data-tab]').forEach(tb => {
+      tb.addEventListener('click', () => {
+        activeTab = tb.dataset.tab;
+        if (activeTab === 'reports' && !reportData) loadReport();
+        paint();
+      });
+    });
+
+    root.querySelectorAll('[data-report-days]').forEach(b => {
+      b.addEventListener('click', () => {
+        reportDays = Number(b.dataset.reportDays);
+        reportData = null;
+        paint();
+        loadReport();
+      });
+    });
+
+    root.querySelector('[data-action="toggle-add-doctor"]')?.addEventListener('click', () => {
+      root.querySelector('#add-doctor-form')?.classList.toggle('hidden');
+    });
+
+    root.querySelector('#add-doctor-form')?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const name = fd.get('name');
+      const specialty = fd.get('specialty');
+      if (!name) return;
+      const btn = e.target.querySelector('button[type="submit"]');
+      btn.disabled = true;
+      btn.textContent = 'Adding…';
+      const res = await store.addDoctor(name, specialty);
+      btn.disabled = false;
+      btn.textContent = 'Add Doctor';
+      if (res.ok) {
+        notifications.toast('Doctor added', res.doctor.name + ' can now receive patients', 'success');
+        e.target.reset();
+        paint();
+      } else {
+        notifications.toast('Error', res.error, 'error');
+      }
+    });
+  };
+
+  paint();
+  manager_unsub = store.subscribe(paint);
+  bus.on('appointment:new', (a) => {
+    notifications.toast('New appointment request', `${a.name} · ${a.phone}`, 'info');
+  });
+
+  root.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-action], [data-appt-action]');
+    if (!btn) return;
+    if (btn.dataset.action === 'logout') {
+      store.logout('manager');
+      window.location.hash = '#/';
+      return;
+    }
+    if (btn.dataset.apptAction === 'approve' && btn.dataset.apptId) {
+      btn.disabled = true;
+      const res = await store.approveAppointment(btn.dataset.apptId);
+      if (res.ok) notifications.toast('Appointment accepted', 'Token #' + res.patient.token + ' issued to ' + res.patient.name, 'success');
+      else notifications.toast('Error', res.error, 'error');
+    }
+    if (btn.dataset.apptAction === 'reject' && btn.dataset.apptId) {
+      btn.disabled = true;
+      const res = await store.rejectAppointment(btn.dataset.apptId);
+      if (res.ok) notifications.toast('Request declined', '', 'info');
+      else notifications.toast('Error', res.error, 'error');
+    }
+  });
+}
+
+function destroyManager() {
+  if (manager_unsub) manager_unsub();
+  manager_unsub = null;
 }
 
 
@@ -3331,8 +3568,9 @@ function renderAdmin(root) {
     const code = slugify(name);
     const receptionPin = generatePin();
     const doctorPin = generatePin();
+    const managerPin = generatePin();
     const { data, error } = await sb.from('hospitals')
-      .insert({ name, code, address, phone, reception_pin: receptionPin, doctor_pin: doctorPin })
+      .insert({ name, code, address, phone, reception_pin: receptionPin, doctor_pin: doctorPin, manager_pin: managerPin })
       .select('id,name,code,address,phone,created_at')
       .single();
     btn.disabled = false;
@@ -3349,7 +3587,7 @@ function renderAdmin(root) {
     root.querySelector('#ah-phone').value = '';
     root.querySelector('#ah-result').classList.remove('hidden');
     root.querySelector('#ah-result-code').textContent = 'Code: ' + data.code;
-    root.querySelector('#ah-result-pins').textContent = `Reception PIN: ${receptionPin}  ·  Doctor PIN: ${doctorPin}`;
+    root.querySelector('#ah-result-pins').textContent = `Reception PIN: ${receptionPin}  ·  Doctor PIN: ${doctorPin}  ·  Manager PIN: ${managerPin}`;
     root.querySelector('#ah-result-link').textContent = window.location.origin + window.location.pathname + '#/?h=' + data.code;
     loadList();
   });
@@ -3605,6 +3843,9 @@ function route() {
   } else if (path.startsWith('/doctor')) {
     renderDoctor(root);
     currentDestroy = destroyDoctor;
+  } else if (path.startsWith('/manager')) {
+    renderManager(root);
+    currentDestroy = destroyManager;
   } else if (path.startsWith('/admin')) {
     renderAdmin(root);
   } else if (path.startsWith('/explore') && EXPLORE_FEATURE_ENABLED) {
@@ -3660,6 +3901,11 @@ function autoEnterRole() {
       return true;
     }
     return false; // let renderLogin show the doctor-selection screen
+  }
+  if (PENDING_ROLE === 'manager' && isPinUnlocked('manager')) {
+    store.loginManager();
+    window.location.hash = '#/manager';
+    return true;
   }
   return false;
 }
