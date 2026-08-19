@@ -607,7 +607,7 @@ class Store {
     try {
       const { data: hospital, error } = await sb
         .from('hospitals')
-        .select('id,name,code,address,phone,owner_id,created_at')
+        .select('id,name,code,address,phone,owner_id,created_at,logo_url')
         .eq('code', clean)
         .maybeSingle();
       if (error || !hospital) {
@@ -655,7 +655,7 @@ class Store {
     try {
       const { data: hospital, error } = await sb
         .from('hospitals')
-        .select('id,name,code,address,phone,owner_id,created_at')
+        .select('id,name,code,address,phone,owner_id,created_at,logo_url')
         .eq('id', id)
         .maybeSingle();
       if (error || !hospital) return { ok: false, error: 'Hospital not found' };
@@ -673,6 +673,7 @@ class Store {
     this.state.hospitalName = hospital.name;
     this.state.hospitalPhone = hospital.phone || '';
     this.state.hospitalAddress = hospital.address || '';
+    this.state.hospitalLogo = hospital.logo_url || '';
 
     const today = todayKey();
 
@@ -917,6 +918,49 @@ class Store {
     } catch (e) {
       console.error(e);
       return { ok: false, error: 'Could not reset PIN' };
+    }
+  }
+
+  // ---------- Branding (Manager) ----------
+  async uploadHospitalLogo(file) {
+    try {
+      if (!file.type.startsWith('image/')) return { ok: false, error: 'Please choose an image file' };
+      if (file.size > 2 * 1024 * 1024) return { ok: false, error: 'Image must be under 2MB' };
+
+      const ext = file.name.split('.').pop() || 'png';
+      const path = `${this.state.hospitalId}/logo.${ext}`;
+
+      const { error: uploadError } = await sb.storage
+        .from('hospital-logos')
+        .upload(path, file, { upsert: true, cacheControl: '3600' });
+      if (uploadError) throw uploadError;
+
+      const { data: urlData } = sb.storage.from('hospital-logos').getPublicUrl(path);
+      const logoUrl = urlData.publicUrl + '?t=' + Date.now(); // cache-bust
+
+      const { error: updateError } = await sb.from('hospitals')
+        .update({ logo_url: logoUrl })
+        .eq('id', this.state.hospitalId);
+      if (updateError) throw updateError;
+
+      this.state.hospitalLogo = logoUrl;
+      this.notify();
+      return { ok: true, logoUrl };
+    } catch (e) {
+      console.error(e);
+      return { ok: false, error: e.message || 'Could not upload logo' };
+    }
+  }
+
+  async removeHospitalLogo() {
+    try {
+      await sb.from('hospitals').update({ logo_url: null }).eq('id', this.state.hospitalId);
+      this.state.hospitalLogo = '';
+      this.notify();
+      return { ok: true };
+    } catch (e) {
+      console.error(e);
+      return { ok: false, error: 'Could not remove logo' };
     }
   }
 
@@ -2083,9 +2127,15 @@ function renderLogin(root) {
         <div class="pointer-events-none absolute -bottom-24 -right-16 w-72 h-72 rounded-full bg-${branding.accent}-500/15 blur-3xl"></div>
         <div class="w-full max-w-md relative">
           <div class="text-center mb-8">
-            <div class="inline-flex w-16 h-16 rounded-2xl bg-gradient-to-br ${branding.gradient} text-white items-center justify-center shadow-glow mb-5">
-              ${icon(branding.icon, 32)}
-            </div>
+            ${hasHospital && store.getState().hospitalLogo ? `
+              <div class="inline-flex w-16 h-16 rounded-2xl overflow-hidden shadow-glow mb-5 bg-white">
+                <img src="${escapeHtml(store.getState().hospitalLogo)}" alt="Hospital logo" class="w-full h-full object-cover" />
+              </div>
+            ` : `
+              <div class="inline-flex w-16 h-16 rounded-2xl bg-gradient-to-br ${branding.gradient} text-white items-center justify-center shadow-glow mb-5">
+                ${icon(branding.icon, 32)}
+              </div>
+            `}
             <h1 class="font-display text-2xl sm:text-3xl font-extrabold tracking-tight">${branding.title}</h1>
             <p class="mt-2 text-slate-500 dark:text-slate-400 text-sm leading-relaxed">
               ${hasHospital ? escapeHtml(store.getState().hospitalName || '') : branding.tagline}
@@ -3625,6 +3675,24 @@ function renderManager(root) {
         ` : ''}
 
         ${activeTab === 'settings' ? `
+          <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card p-5 mb-4">
+            <h2 class="font-display font-bold text-base mb-1">Hospital Branding</h2>
+            <p class="text-xs text-slate-500 mb-4">Upload your hospital's logo. Patients will see it on the login and check-in screen.</p>
+            <div class="flex items-center gap-4 mb-4">
+              <div class="w-16 h-16 rounded-2xl overflow-hidden bg-slate-100 dark:bg-slate-800 flex items-center justify-center shrink-0">
+                ${state.hospitalLogo ? `<img src="${escapeHtml(state.hospitalLogo)}" alt="Logo" class="w-full h-full object-cover" />` : icon('image', 24, 'text-slate-400')}
+              </div>
+              <div class="flex-1 space-y-2">
+                <label class="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold cursor-pointer transition">
+                  ${icon('upload', 13)} <span id="logo-upload-label">${state.hospitalLogo ? 'Change Logo' : 'Upload Logo'}</span>
+                  <input type="file" id="logo-upload-input" accept="image/*" class="hidden" />
+                </label>
+                ${state.hospitalLogo ? `<button data-action="remove-logo" class="block text-xs text-slate-500 hover:text-rose-600 transition">Remove logo</button>` : ''}
+              </div>
+            </div>
+            <p class="text-[11px] text-slate-400">PNG or JPG, square image works best, under 2MB.</p>
+          </div>
+
           <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card p-5">
             <h2 class="font-display font-bold text-base mb-1">Reset Shared PINs</h2>
             <p class="text-xs text-slate-500 mb-4">Generates a brand-new PIN and replaces the old one immediately. Share the new PIN with your staff — the old one stops working right away.</p>
@@ -3845,6 +3913,29 @@ function renderManager(root) {
           notifications.toast('Error', res.error, 'error');
         }
       });
+    });
+
+    root.querySelector('#logo-upload-input')?.addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const label = root.querySelector('#logo-upload-label');
+      const prevText = label.textContent;
+      label.textContent = 'Uploading…';
+      const res = await store.uploadHospitalLogo(file);
+      label.textContent = prevText;
+      if (res.ok) {
+        notifications.toast('Logo updated', 'Patients will see your new logo', 'success');
+        paint();
+      } else {
+        notifications.toast('Error', res.error, 'error');
+      }
+    });
+
+    root.querySelector('[data-action="remove-logo"]')?.addEventListener('click', async () => {
+      if (!confirm('Remove the hospital logo?')) return;
+      const res = await store.removeHospitalLogo();
+      if (res.ok) { notifications.toast('Logo removed', '', 'info'); paint(); }
+      else notifications.toast('Error', res.error, 'error');
     });
   };
 
