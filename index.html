@@ -4503,11 +4503,9 @@ function renderAdmin(root) {
     btn.disabled = true;
     btn.textContent = 'Creating…';
     const code = slugify(name);
-    const receptionPin = generatePin();
-    const doctorPin = generatePin();
     const managerPin = generatePin();
     const { data, error } = await sb.from('hospitals')
-      .insert({ name, code, address, phone, reception_pin: receptionPin, doctor_pin: doctorPin, manager_pin: managerPin })
+      .insert({ name, code, address, phone, manager_pin: managerPin })
       .select('id,name,code,address,phone,created_at')
       .single();
     btn.disabled = false;
@@ -4524,7 +4522,7 @@ function renderAdmin(root) {
     root.querySelector('#ah-phone').value = '';
     root.querySelector('#ah-result').classList.remove('hidden');
     root.querySelector('#ah-result-code').textContent = 'Code: ' + data.code;
-    root.querySelector('#ah-result-pins').textContent = `Reception PIN: ${receptionPin}  ·  Doctor PIN: ${doctorPin}  ·  Manager PIN: ${managerPin}`;
+    root.querySelector('#ah-result-pins').textContent = `Manager PIN: ${managerPin}`;
     root.querySelector('#ah-result-link').textContent = window.location.origin + window.location.pathname + '#/?h=' + data.code;
     loadList();
   });
