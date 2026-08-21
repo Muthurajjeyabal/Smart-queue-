@@ -2426,8 +2426,8 @@ function renderLogin(root) {
               <button data-action="back-roles" class="text-sm text-slate-500 hover:text-brand-600 flex items-center gap-1 mb-4">
                 ${icon('arrow-left', 16)} Back
               </button>
-              <h2 class="font-display font-bold text-lg mb-1">Welcome, Doctor</h2>
-              <p class="text-xs text-slate-500 mb-4">Please select your name to continue.</p>
+              <h2 id="doctor-select-title" class="font-display font-bold text-lg mb-1">Welcome, Doctor</h2>
+              <p id="doctor-select-subtitle" class="text-xs text-slate-500 mb-4">Please select your name to continue.</p>
               <div id="doctor-select-list" class="space-y-2"></div>
             </div>
           </div>
@@ -2621,6 +2621,8 @@ function renderLogin(root) {
     root.querySelector('#role-select')?.classList.add('hidden');
     root.querySelector('#pin-gate')?.classList.add('hidden');
     root.querySelector('#doctor-select-gate')?.classList.remove('hidden');
+    root.querySelector('#doctor-select-title').textContent = 'Welcome, Doctor';
+    root.querySelector('#doctor-select-subtitle').textContent = 'Please select your name to continue.';
     const list = root.querySelector('#doctor-select-list');
     const doctors = store.getState().doctors;
     list.innerHTML = doctors.map(d => `
