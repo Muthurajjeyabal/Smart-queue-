@@ -4889,7 +4889,9 @@ function route() {
   }
 
   const hash = window.location.hash || '#/';
-  const path = hash.replace(/^#/, '') || '/';
+  const qIdx = hash.indexOf('?');
+  const cleanHash = qIdx >= 0 ? hash.slice(0, qIdx) : hash; // strip ?role=/?h= before path matching
+  const path = cleanHash.replace(/^#/, '') || '/';
 
   // Clear app
   app.innerHTML = '';
