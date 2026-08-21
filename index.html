@@ -2821,8 +2821,8 @@ function renderLogin(root) {
 
 
 
-let patient_patient_unsub = null;
-let patient_patient_countdownTimer = null;
+let patient_unsub = null;
+let patient_countdownTimer = null;
 
 function renderPatient(root) {
   const session = store.getState().sessions.patient;
@@ -3178,7 +3178,7 @@ function destroyPatient() {
 
 
 
-let reception_reception_unsub = null;
+let reception_unsub = null;
 
 function renderReception(root) {
   const session = store.getState().sessions.reception;
@@ -4278,7 +4278,7 @@ function destroyManager() {
 
 
 
-let doctor_doctor_unsub = null;
+let doctor_unsub = null;
 
 const ADMIN_PASSCODE = 'myqueue2026'; // change this to your own secret
 
