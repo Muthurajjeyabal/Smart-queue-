@@ -826,7 +826,7 @@ class Store {
     // a fresh hospital simply starts with zero doctors, no placeholder created)
     let { data: staffRows } = await sb
       .from('staff')
-      .select('id,hospital_id,role,name,specialty,avg_consult_min,active,created_at')
+      .select('id,hospital_id,role,name,specialty,avg_consult_min,active,assigned_reception_id,created_at')
       .eq('hospital_id', hospital.id)
       .eq('role', 'doctor')
       .order('created_at', { ascending: true });
@@ -872,6 +872,7 @@ class Store {
         pauseReason: statusRow.pause_reason || null,
         nextToken: statusRow.next_token || 1,
         active: staffRow.active !== false,
+        assignedReceptionId: staffRow.assigned_reception_id || null,
       };
     });
 
@@ -944,7 +945,7 @@ class Store {
         avg_consult_min: DEFAULT_AVG_CONSULT,
         active: true,
         pin,
-      }).select('id,hospital_id,role,name,specialty,avg_consult_min,active').single();
+      }).select('id,hospital_id,role,name,specialty,avg_consult_min,active,assigned_reception_id').single();
       if (error || !staffRow) throw error || new Error('Insert failed');
 
       const { data: statusRow } = await sb.from('doctor_status').insert({
@@ -968,6 +969,7 @@ class Store {
         totalSeenToday: 0,
         pauseReason: null,
         nextToken: 1,
+        assignedReceptionId: null,
       });
       this.notify();
       return { ok: true, doctor: this.getDoctor(staffRow.id), pin };
@@ -1387,10 +1389,60 @@ class Store {
       .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
   }
 
+  // For Reception: only requests for doctors assigned to them (+ any doctor
+  // that has no assigned reception yet, so nothing falls through the cracks).
+  // A legacy shared-PIN reception session (no staffId) sees everything.
+  getPendingAppointmentsForReception(staffId) {
+    const pending = this.getPendingAppointments();
+    if (!staffId) return pending;
+    return pending.filter(a => {
+      const doc = this.getDoctor(a.doctorId);
+      if (!doc || !doc.assignedReceptionId) return true;
+      return doc.assignedReceptionId === staffId;
+    });
+  }
+
+  async setDoctorReception(doctorId, receptionStaffId) {
+    const doc = this.getDoctor(doctorId);
+    if (!doc) return { ok: false, error: 'Doctor not found' };
+    try {
+      await sb.from('staff').update({ assigned_reception_id: receptionStaffId || null }).eq('id', doctorId);
+      doc.assignedReceptionId = receptionStaffId || null;
+      this.notify();
+      return { ok: true };
+    } catch (e) {
+      console.error(e);
+      return { ok: false, error: 'Could not update assignment' };
+    }
+  }
+
   async approveAppointment(appointmentId) {
     const appt = this.state.appointments.find(a => a.id === appointmentId);
     if (!appt) return { ok: false, error: 'Request not found' };
     try {
+      // Atomically claim this request — only succeeds if it's still pending.
+      // If two staff tap Accept at the same moment, only the first one wins.
+      const { data: claimed, error: claimError } = await sb.from('appointments')
+        .update({ status: 'approved', resolved_at: new Date().toISOString() })
+        .eq('id', appointmentId)
+        .eq('status', 'pending')
+        .select()
+        .maybeSingle();
+      if (claimError) throw claimError;
+
+      if (!claimed) {
+        // Someone else already handled this — sync local state to match reality
+        const { data: latest } = await sb.from('appointments').select('*').eq('id', appointmentId).maybeSingle();
+        if (latest) {
+          const idx = this.state.appointments.findIndex(a => a.id === appointmentId);
+          const mapped = mapAppointmentRow(latest);
+          if (idx >= 0) this.state.appointments[idx] = mapped;
+          this.notify();
+        }
+        return { ok: false, error: 'Already handled by another staff member', alreadyHandled: true };
+      }
+
+      // We won the claim — now create the token
       const patient = this.registerWalkIn({
         name: appt.name,
         phone: appt.phone,
@@ -1399,11 +1451,7 @@ class Store {
         notes: [appt.preferredDate, appt.preferredTime].filter(Boolean).join(' '),
         doctorId: appt.doctorId,
       });
-      await sb.from('appointments').update({
-        status: 'approved',
-        resolved_patient_id: patient.id,
-        resolved_at: new Date().toISOString(),
-      }).eq('id', appointmentId);
+      await sb.from('appointments').update({ resolved_patient_id: patient.id }).eq('id', appointmentId);
       appt.status = 'approved';
       appt.resolvedPatientId = patient.id;
       this.notify();
@@ -1418,10 +1466,25 @@ class Store {
     const appt = this.state.appointments.find(a => a.id === appointmentId);
     if (!appt) return { ok: false, error: 'Request not found' };
     try {
-      await sb.from('appointments').update({
-        status: 'rejected',
-        resolved_at: new Date().toISOString(),
-      }).eq('id', appointmentId);
+      const { data: claimed, error } = await sb.from('appointments')
+        .update({ status: 'rejected', resolved_at: new Date().toISOString() })
+        .eq('id', appointmentId)
+        .eq('status', 'pending')
+        .select()
+        .maybeSingle();
+      if (error) throw error;
+
+      if (!claimed) {
+        const { data: latest } = await sb.from('appointments').select('*').eq('id', appointmentId).maybeSingle();
+        if (latest) {
+          const idx = this.state.appointments.findIndex(a => a.id === appointmentId);
+          const mapped = mapAppointmentRow(latest);
+          if (idx >= 0) this.state.appointments[idx] = mapped;
+          this.notify();
+        }
+        return { ok: false, error: 'Already handled by another staff member', alreadyHandled: true };
+      }
+
       appt.status = 'rejected';
       this.notify();
       return { ok: true };
@@ -3190,6 +3253,7 @@ function renderReception(root) {
   const paint = () => {
     const state = store.getState();
     const overview = queueEngine.getOverview();
+    const pendingAppointments = store.getPendingAppointmentsForReception(session.staffId);
     const searchQ = (document.getElementById('search-input') || {}).value || '';
     const selectedDoctorId = (document.getElementById('register-doctor') || {}).value || state.doctors[0]?.id || '';
 
@@ -3222,6 +3286,34 @@ function renderReception(root) {
           ${metricCard('Seen Today', overview.totalSeen, 'across all doctors', 'slate')}
           ${metricCard('Total Patients', filtered.filter(p => p.day === state.day).length, 'today', 'rose')}
         </div>
+
+        ${pendingAppointments.length ? `
+          <div class="rounded-2xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 shadow-card p-5 mb-6">
+            <h2 class="font-display font-bold text-base mb-4 flex items-center gap-2 text-amber-800 dark:text-amber-200">
+              ${icon('calendar-clock', 18)} Appointment Requests
+              <span class="text-xs font-bold bg-amber-500 text-white px-2 py-0.5 rounded-full">${pendingAppointments.length}</span>
+            </h2>
+            <div class="space-y-2.5">
+              ${pendingAppointments.map(a => {
+                const doc = store.getDoctor(a.doctorId);
+                return `
+                <div class="flex flex-col sm:flex-row sm:items-center gap-3 p-3 rounded-xl bg-white dark:bg-slate-900 border border-amber-200/60 dark:border-amber-800/60">
+                  <div class="flex-1 min-w-0">
+                    <p class="font-semibold text-sm">${escapeHtml(a.name)} ${a.age ? `<span class="text-slate-400 font-normal">· ${a.age}${a.gender ? ', ' + escapeHtml(a.gender) : ''}</span>` : ''}</p>
+                    <p class="text-xs text-slate-500 mt-0.5">${a.phone} · Wants: <span class="font-medium text-slate-700 dark:text-slate-300">${doc ? escapeHtml(doc.name) : 'Any doctor'}</span></p>
+                    <p class="text-xs text-slate-500">${a.preferredDate ? formatDate(a.preferredDate) : ''} ${a.preferredTime ? '· ' + escapeHtml(a.preferredTime) : ''}</p>
+                    ${a.notes ? `<p class="text-[11px] text-slate-400 mt-0.5">${escapeHtml(a.notes)}</p>` : ''}
+                  </div>
+                  <div class="flex gap-2 shrink-0">
+                    <button data-appt-action="approve" data-appt-id="${a.id}" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-700 transition">Accept</button>
+                    <button data-appt-action="reject" data-appt-id="${a.id}" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-300 dark:hover:bg-slate-600 transition">Decline</button>
+                  </div>
+                </div>
+              `;
+              }).join('')}
+            </div>
+          </div>
+        ` : ''}
 
         <div class="grid lg:grid-cols-5 gap-6">
           <div class="lg:col-span-2 space-y-4">
@@ -3350,9 +3442,12 @@ function renderReception(root) {
   paint();
   reception_unsub = store.subscribe(paint);
   bus.on('queue:updated', paint);
+  bus.on('appointment:new', (a) => {
+    notifications.toast('New appointment request', `${a.name} · ${a.phone}`, 'info');
+  });
 
   root.addEventListener('click', async (e) => {
-    const btn = e.target.closest('[data-action], [data-status]');
+    const btn = e.target.closest('[data-action], [data-status], [data-appt-action]');
     if (!btn) return;
     if (btn.dataset.action === 'logout') {
       store.logout('reception');
@@ -3368,6 +3463,20 @@ function renderReception(root) {
     if (btn.dataset.status && btn.dataset.id) {
       store.setPatientStatus(btn.dataset.id, btn.dataset.status);
       notifications.toast('Status updated', 'Marked as ' + btn.dataset.status.replace('_', ' '), 'info');
+    }
+    if (btn.dataset.apptAction === 'approve' && btn.dataset.apptId) {
+      btn.disabled = true;
+      const res = await store.approveAppointment(btn.dataset.apptId);
+      if (res.ok) notifications.toast('Appointment accepted', 'Token #' + res.patient.token + ' issued to ' + res.patient.name, 'success');
+      else if (res.alreadyHandled) notifications.toast('Already handled', 'Another staff member already actioned this request', 'info');
+      else notifications.toast('Error', res.error, 'error');
+    }
+    if (btn.dataset.apptAction === 'reject' && btn.dataset.apptId) {
+      btn.disabled = true;
+      const res = await store.rejectAppointment(btn.dataset.apptId);
+      if (res.ok) notifications.toast('Request declined', '', 'info');
+      else if (res.alreadyHandled) notifications.toast('Already handled', 'Another staff member already actioned this request', 'info');
+      else notifications.toast('Error', res.error, 'error');
     }
   });
 }
@@ -3636,6 +3745,13 @@ function renderManager(root) {
                         <p class="text-[11px] text-slate-500 truncate">${escapeHtml(d.specialty)} · ${dSnap.totalWaiting} waiting · ${dSnap.totalSeen} seen today</p>
                       </div>
                       ${doctorStatusBadge(d.status)}
+                    </div>
+                    <div class="mt-2.5">
+                      <label class="text-[10px] text-slate-400 block mb-1">Appointment requests go to</label>
+                      <select data-action="assign-reception" data-doctor-id="${d.id}" class="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs outline-none focus:ring-2 focus:ring-rose-500 transition">
+                        <option value="">Everyone (no specific staff)</option>
+                        ${state.receptionStaff.filter(s => s.active !== false).map(s => `<option value="${s.id}" ${d.assignedReceptionId === s.id ? 'selected' : ''}>${escapeHtml(s.name)}</option>`).join('')}
+                      </select>
                     </div>
                     <div class="flex gap-2 mt-2.5">
                       <button data-action="edit-doctor" data-doctor-id="${d.id}" class="text-xs px-2.5 py-1 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:border-rose-400 transition">Edit</button>
@@ -4099,6 +4215,14 @@ function renderManager(root) {
       });
     });
 
+    root.querySelectorAll('[data-action="assign-reception"]').forEach(sel => {
+      sel.addEventListener('change', async () => {
+        const res = await store.setDoctorReception(sel.dataset.doctorId, sel.value || null);
+        if (res.ok) notifications.toast('Updated', 'Appointment routing saved', 'success');
+        else notifications.toast('Error', res.error, 'error');
+      });
+    });
+
     root.querySelectorAll('[data-action="edit-doctor"]').forEach(b => {
       b.addEventListener('click', () => {
         root.querySelector(`[data-edit-form="${b.dataset.doctorId}"]`)?.classList.remove('hidden');
@@ -4250,12 +4374,14 @@ function renderManager(root) {
       btn.disabled = true;
       const res = await store.approveAppointment(btn.dataset.apptId);
       if (res.ok) notifications.toast('Appointment accepted', 'Token #' + res.patient.token + ' issued to ' + res.patient.name, 'success');
+      else if (res.alreadyHandled) notifications.toast('Already handled', 'Another staff member already actioned this request', 'info');
       else notifications.toast('Error', res.error, 'error');
     }
     if (btn.dataset.apptAction === 'reject' && btn.dataset.apptId) {
       btn.disabled = true;
       const res = await store.rejectAppointment(btn.dataset.apptId);
       if (res.ok) notifications.toast('Request declined', '', 'info');
+      else if (res.alreadyHandled) notifications.toast('Already handled', 'Another staff member already actioned this request', 'info');
       else notifications.toast('Error', res.error, 'error');
     }
   });
