@@ -1202,7 +1202,7 @@ class Store {
   }
 
   // ---------- Background sync helpers (fire-and-forget) ----------
-  async _pushPatientInsert(p) {
+  async _pushPatientInsert(p, attempt = 1) {
     try {
       const { error } = await sb.from('patients').insert({
         id: p.id,
@@ -1222,7 +1222,11 @@ class Store {
       if (error) throw error;
     } catch (e) {
       console.error(e);
-      notifications.toast('Sync issue', 'Could not save patient to server', 'error');
+      if (attempt < 3) {
+        setTimeout(() => this._pushPatientInsert(p, attempt + 1), attempt * 1500);
+      } else {
+        notifications.toast('Sync issue', p.name + "'s token (#" + p.token + ") could not be saved. Check your connection and try again.", 'error');
+      }
     }
   }
 
@@ -3337,7 +3341,7 @@ function renderReception(root) {
       const isEmergency = fd.get('emergency') === 'on';
       const doctorId = fd.get('doctorId');
       if (!name || !phone || !doctorId) return;
-      const p = store.registerWalkIn({ name, phone, isEmergency, notes, doctorId });
+      const p = store.registerWalkIn({ name, phone, isEmergency, notes, doctorId, registeredBy: session.name || '' });
       notifications.toast('Token #' + p.token + ' issued', p.name + (isEmergency ? ' · Emergency priority' : ' · Added to queue'), 'success');
       e.target.reset();
     });
