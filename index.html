@@ -488,13 +488,17 @@ const WEEKDAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 const WEEKDAY_LABELS = { sun: 'Sunday', mon: 'Monday', tue: 'Tuesday', wed: 'Wednesday', thu: 'Thursday', fri: 'Friday', sat: 'Saturday' };
 function defaultSchedule() {
   const s = {};
-  WEEKDAYS.forEach(d => { s[d] = { active: true, start: '09:00', end: '21:00' }; });
+  WEEKDAYS.forEach(d => { s[d] = { active: true, start: '09:00', end: '21:00', breaks: [] }; });
   return s;
 }
 function getDoctorSchedule(doctor) {
   return doctor && doctor.schedule ? doctor.schedule : defaultSchedule();
 }
-// Checks a date (YYYY-MM-DD) + optional time (HH:MM) against a doctor's schedule.
+function timeInRange(t, start, end) {
+  return t >= start && t <= end;
+}
+// Checks a date (YYYY-MM-DD) + optional time (HH:MM) against a doctor's schedule,
+// including any break periods (e.g. hospital rounds) within the working day.
 // Returns { ok, error } — error is a friendly message when unavailable.
 function checkDoctorAvailability(doctor, dateStr, timeStr) {
   if (!dateStr) return { ok: true };
@@ -507,6 +511,11 @@ function checkDoctorAvailability(doctor, dateStr, timeStr) {
   }
   if (timeStr && (timeStr < daySchedule.start || timeStr > daySchedule.end)) {
     return { ok: false, error: `${doctor.name} is available on ${WEEKDAY_LABELS[day]} from ${daySchedule.start} to ${daySchedule.end}` };
+  }
+  const breaks = (daySchedule.breaks || []).filter(b => b.start && b.end);
+  if (timeStr && breaks.some(b => timeInRange(timeStr, b.start, b.end))) {
+    const breakList = breaks.map(b => `${b.start}-${b.end}`).join(', ');
+    return { ok: false, error: `${doctor.name} is on hospital rounds during ${breakList}. Please choose a different time.` };
   }
   return { ok: true };
 }
@@ -3615,7 +3624,9 @@ function showAppointmentModal({ phone, name }) {
     if (!doc) { hint.textContent = ''; return; }
     const schedule = getDoctorSchedule(doc);
     const openDays = WEEKDAYS.filter(d => schedule[d]?.active);
-    if (openDays.length === WEEKDAYS.length && openDays.every(d => schedule[d].start === '09:00' && schedule[d].end === '21:00')) {
+    const hasBreaks = openDays.some(d => (schedule[d].breaks || []).some(b => b.start && b.end));
+    const isDefault = openDays.length === WEEKDAYS.length && openDays.every(d => schedule[d].start === '09:00' && schedule[d].end === '21:00') && !hasBreaks;
+    if (isDefault) {
       hint.textContent = ''; // default schedule, no need to clutter the UI
       return;
     }
@@ -3623,7 +3634,12 @@ function showAppointmentModal({ phone, name }) {
       hint.textContent = `${doc.name} has no available days set. Please contact the hospital directly.`;
       return;
     }
-    const grouped = openDays.map(d => `${WEEKDAY_LABELS[d].slice(0,3)} ${schedule[d].start}-${schedule[d].end}`).join(', ');
+    const grouped = openDays.map(d => {
+      const daySched = schedule[d];
+      const breaks = (daySched.breaks || []).filter(b => b.start && b.end);
+      const breakNote = breaks.length ? ` (rounds: ${breaks.map(b => `${b.start}-${b.end}`).join(', ')})` : '';
+      return `${WEEKDAY_LABELS[d].slice(0,3)} ${daySched.start}-${daySched.end}${breakNote}`;
+    }).join(', ');
     hint.textContent = `Available: ${grouped}`;
   }
   overlay.querySelector('#appt-doctor-select')?.addEventListener('change', updateAvailabilityHint);
@@ -3850,18 +3866,35 @@ function renderManager(root) {
                         <button type="button" data-action="cancel-edit-doctor" class="flex-1 py-2 rounded-xl bg-slate-200 dark:bg-slate-700 text-xs font-semibold transition">Cancel</button>
                       </div>
                     </form>
-                    <form data-schedule-form="${d.id}" class="hidden mt-2.5 space-y-1.5 p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700">
+                    <form data-schedule-form="${d.id}" class="hidden mt-2.5 space-y-2.5 p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700">
+                      <p class="text-[10px] text-slate-400">Set working hours per day. "Break" times (e.g. hospital rounds) are excluded from booking even within working hours.</p>
                       ${WEEKDAYS.map(day => {
-                        const sched = getDoctorSchedule(d)[day] || { active: false, start: '09:00', end: '21:00' };
+                        const sched = getDoctorSchedule(d)[day] || { active: false, start: '09:00', end: '21:00', breaks: [] };
+                        const b1 = sched.breaks?.[0] || { start: '', end: '' };
+                        const b2 = sched.breaks?.[1] || { start: '', end: '' };
                         return `
-                        <div class="flex items-center gap-2 text-xs">
-                          <label class="flex items-center gap-1.5 w-24 shrink-0">
-                            <input type="checkbox" name="active_${day}" ${sched.active ? 'checked' : ''} class="w-3.5 h-3.5 rounded border-slate-300" />
-                            ${WEEKDAY_LABELS[day].slice(0,3)}
-                          </label>
-                          <input type="time" name="start_${day}" value="${sched.start}" class="flex-1 px-1.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent text-[11px] outline-none" />
-                          <span class="text-slate-400">–</span>
-                          <input type="time" name="end_${day}" value="${sched.end}" class="flex-1 px-1.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent text-[11px] outline-none" />
+                        <div class="pb-2 border-b border-slate-100 dark:border-slate-800 last:border-0">
+                          <div class="flex items-center gap-2 text-xs">
+                            <label class="flex items-center gap-1.5 w-24 shrink-0">
+                              <input type="checkbox" name="active_${day}" ${sched.active ? 'checked' : ''} class="w-3.5 h-3.5 rounded border-slate-300" />
+                              ${WEEKDAY_LABELS[day].slice(0,3)}
+                            </label>
+                            <input type="time" name="start_${day}" value="${sched.start}" class="flex-1 px-1.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent text-[11px] outline-none" />
+                            <span class="text-slate-400">–</span>
+                            <input type="time" name="end_${day}" value="${sched.end}" class="flex-1 px-1.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent text-[11px] outline-none" />
+                          </div>
+                          <div class="flex items-center gap-2 text-[10px] mt-1 pl-[6.5rem]">
+                            <span class="text-slate-400 w-10 shrink-0">Break 1</span>
+                            <input type="time" name="break1start_${day}" value="${b1.start}" class="flex-1 px-1.5 py-1 rounded-lg border border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 text-[10px] outline-none" />
+                            <span class="text-slate-300">–</span>
+                            <input type="time" name="break1end_${day}" value="${b1.end}" class="flex-1 px-1.5 py-1 rounded-lg border border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 text-[10px] outline-none" />
+                          </div>
+                          <div class="flex items-center gap-2 text-[10px] mt-1 pl-[6.5rem]">
+                            <span class="text-slate-400 w-10 shrink-0">Break 2</span>
+                            <input type="time" name="break2start_${day}" value="${b2.start}" class="flex-1 px-1.5 py-1 rounded-lg border border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 text-[10px] outline-none" />
+                            <span class="text-slate-300">–</span>
+                            <input type="time" name="break2end_${day}" value="${b2.end}" class="flex-1 px-1.5 py-1 rounded-lg border border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 text-[10px] outline-none" />
+                          </div>
                         </div>
                       `;
                       }).join('')}
@@ -4336,10 +4369,16 @@ function renderManager(root) {
         const fd = new FormData(e.target);
         const schedule = {};
         WEEKDAYS.forEach(day => {
+          const breaks = [];
+          const b1s = fd.get(`break1start_${day}`), b1e = fd.get(`break1end_${day}`);
+          const b2s = fd.get(`break2start_${day}`), b2e = fd.get(`break2end_${day}`);
+          if (b1s && b1e) breaks.push({ start: b1s, end: b1e });
+          if (b2s && b2e) breaks.push({ start: b2s, end: b2e });
           schedule[day] = {
             active: fd.get(`active_${day}`) === 'on',
             start: fd.get(`start_${day}`) || '09:00',
             end: fd.get(`end_${day}`) || '21:00',
+            breaks,
           };
         });
         const btn = e.target.querySelector('button[type="submit"]');
