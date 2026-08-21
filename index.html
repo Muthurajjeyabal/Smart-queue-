@@ -935,6 +935,7 @@ class Store {
   async addDoctor(name, specialty) {
     const today = todayKey();
     try {
+      const pin = generatePin();
       const { data: staffRow, error } = await sb.from('staff').insert({
         hospital_id: this.state.hospitalId,
         role: 'doctor',
@@ -942,6 +943,7 @@ class Store {
         specialty: (specialty || 'General Physician').trim(),
         avg_consult_min: DEFAULT_AVG_CONSULT,
         active: true,
+        pin,
       }).select('id,hospital_id,role,name,specialty,avg_consult_min,active').single();
       if (error || !staffRow) throw error || new Error('Insert failed');
 
@@ -968,10 +970,21 @@ class Store {
         nextToken: 1,
       });
       this.notify();
-      return { ok: true, doctor: this.getDoctor(staffRow.id) };
+      return { ok: true, doctor: this.getDoctor(staffRow.id), pin };
     } catch (e) {
       console.error(e);
       return { ok: false, error: e.message || 'Could not add doctor' };
+    }
+  }
+
+  async resetDoctorPin(doctorId) {
+    try {
+      const pin = generatePin();
+      await sb.from('staff').update({ pin }).eq('id', doctorId);
+      return { ok: true, pin };
+    } catch (e) {
+      console.error(e);
+      return { ok: false, error: 'Could not reset PIN' };
     }
   }
 
@@ -2552,12 +2565,11 @@ function renderLogin(root) {
       window.location.hash = '#/manager';
     } else if (role === 'doctor') {
       const doctors = store.getActiveDoctors();
-      if (doctors.length === 1) {
-        enterAsDoctor(doctors[0].id);
-      } else if (doctors.length > 1) {
-        showDoctorSelectGate();
-      } else {
+      if (doctors.length === 0) {
         notifications.toast('No doctors yet', 'Ask your manager to add a doctor first', 'warning');
+      } else {
+        // Always ask "who are you" + their own PIN — each doctor has an individual PIN
+        showDoctorSelectGate();
       }
     }
   }
@@ -2588,11 +2600,11 @@ function renderLogin(root) {
       </button>
     `).join('');
     list.querySelectorAll('[data-select-staff]').forEach(btn => {
-      btn.addEventListener('click', () => showIndividualPinGate(btn.dataset.selectStaff, btn.dataset.selectStaffName));
+      btn.addEventListener('click', () => showIndividualPinGate(btn.dataset.selectStaff, btn.dataset.selectStaffName, 'reception'));
     });
   }
 
-  function showIndividualPinGate(staffId, name) {
+  function showIndividualPinGate(staffId, name, role) {
     root.querySelector('#role-select')?.classList.add('hidden');
     root.querySelector('#doctor-select-gate')?.classList.add('hidden');
     const gate = root.querySelector('#pin-gate');
@@ -2600,6 +2612,7 @@ function renderLogin(root) {
     gate.dataset.mode = 'individual';
     gate.dataset.staffId = staffId;
     gate.dataset.staffName = name;
+    gate.dataset.staffRole = role; // 'reception' | 'doctor' — used for fallback + where to navigate on success
     root.querySelector('#pin-gate-title').textContent = `Enter PIN — ${name}`;
     root.querySelector('#pin-input').value = '';
     root.querySelector('#pin-error').classList.add('hidden');
@@ -2624,9 +2637,9 @@ function renderLogin(root) {
     root.querySelector('#doctor-select-title').textContent = 'Welcome, Doctor';
     root.querySelector('#doctor-select-subtitle').textContent = 'Please select your name to continue.';
     const list = root.querySelector('#doctor-select-list');
-    const doctors = store.getState().doctors;
+    const doctors = store.getActiveDoctors();
     list.innerHTML = doctors.map(d => `
-      <button data-select-doctor="${d.id}" class="w-full flex items-center gap-3 p-3 rounded-xl border border-slate-200 dark:border-slate-800 hover:border-violet-400 transition text-left">
+      <button data-select-doctor="${d.id}" data-select-doctor-name="${escapeHtml(d.name)}" class="w-full flex items-center gap-3 p-3 rounded-xl border border-slate-200 dark:border-slate-800 hover:border-violet-400 transition text-left">
         <div class="w-10 h-10 rounded-xl bg-violet-50 dark:bg-violet-950 text-violet-600 dark:text-violet-400 flex items-center justify-center shrink-0">
           ${icon('stethoscope', 18)}
         </div>
@@ -2637,7 +2650,7 @@ function renderLogin(root) {
       </button>
     `).join('');
     list.querySelectorAll('[data-select-doctor]').forEach(btn => {
-      btn.addEventListener('click', () => enterAsDoctor(btn.dataset.selectDoctor));
+      btn.addEventListener('click', () => showIndividualPinGate(btn.dataset.selectDoctor, btn.dataset.selectDoctorName, 'doctor'));
     });
   }
 
@@ -2671,17 +2684,42 @@ function renderLogin(root) {
       if (mode === 'individual') {
         const staffId = gate.dataset.staffId;
         const staffName = gate.dataset.staffName;
+        const staffRole = gate.dataset.staffRole || 'reception';
         const { data, error } = await sb.rpc('verify_individual_pin', {
           p_staff_id: staffId,
           p_pin: pin,
         });
-        btn.disabled = false;
-        label.textContent = 'Unlock';
-        if (error || !data) {
+
+        if (!error && data) {
+          btn.disabled = false;
+          label.textContent = 'Unlock';
+          if (staffRole === 'doctor') enterAsDoctor(staffId);
+          else enterAsReception(staffName, staffId);
+          return;
+        }
+
+        // Doctor fallback: this doctor may not have an individual PIN set yet
+        // (older doctors created before this feature) — try the hospital's
+        // shared Doctor PIN as a backward-compatible fallback.
+        if (staffRole === 'doctor') {
+          const { data: sharedOk } = await sb.rpc('verify_staff_pin', {
+            p_hospital_code: store.getState().hospitalCode,
+            p_role: 'doctor',
+            p_pin: pin,
+          });
+          btn.disabled = false;
+          label.textContent = 'Unlock';
+          if (sharedOk) {
+            enterAsDoctor(staffId);
+            return;
+          }
           err.classList.remove('hidden');
           return;
         }
-        enterAsReception(staffName, staffId);
+
+        btn.disabled = false;
+        label.textContent = 'Unlock';
+        err.classList.remove('hidden');
         return;
       }
 
@@ -2713,13 +2751,13 @@ function renderLogin(root) {
   });
 
   // If a dedicated reception/doctor/manager link was opened and hospital already resolved, act now
-  if (hasHospital && PENDING_ROLE === 'reception') {
-    enterStaffRole('reception'); // internally handles named-staff-select vs shared-PIN fallback
-  } else if (hasHospital && (PENDING_ROLE === 'doctor' || PENDING_ROLE === 'manager')) {
-    if (isPinUnlocked(PENDING_ROLE)) {
-      enterStaffRole(PENDING_ROLE);
+  if (hasHospital && (PENDING_ROLE === 'reception' || PENDING_ROLE === 'doctor')) {
+    enterStaffRole(PENDING_ROLE); // internally handles named-staff-select vs shared-PIN fallback
+  } else if (hasHospital && PENDING_ROLE === 'manager') {
+    if (isPinUnlocked('manager')) {
+      enterStaffRole('manager');
     } else {
-      showPinGate(PENDING_ROLE);
+      showPinGate('manager');
     }
   }
 
@@ -3597,6 +3635,7 @@ function renderManager(root) {
                     </div>
                     <div class="flex gap-2 mt-2.5">
                       <button data-action="edit-doctor" data-doctor-id="${d.id}" class="text-xs px-2.5 py-1 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:border-rose-400 transition">Edit</button>
+                      <button data-action="reset-doctor-pin" data-doctor-id="${d.id}" data-doctor-name="${escapeHtml(d.name)}" class="text-xs px-2.5 py-1 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:border-rose-400 transition">Reset PIN</button>
                       <button data-action="deactivate-doctor" data-doctor-id="${d.id}" class="text-xs px-2.5 py-1 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-rose-600 hover:border-rose-400 transition">Deactivate</button>
                     </div>
                     <form data-edit-form="${d.id}" class="hidden mt-2.5 space-y-2">
@@ -3623,6 +3662,7 @@ function renderManager(root) {
                 Add Doctor
               </button>
             </form>
+            <div id="new-doctor-pin-box" class="hidden mt-3 p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 text-sm"></div>
           </div>
 
           ${inactiveDocs.length ? `
@@ -4031,12 +4071,28 @@ function renderManager(root) {
       btn.disabled = false;
       btn.textContent = 'Add Doctor';
       if (res.ok) {
-        notifications.toast('Doctor added', res.doctor.name + ' can now receive patients', 'success');
         e.target.reset();
+        const box = root.querySelector('#new-doctor-pin-box');
+        box.classList.remove('hidden');
+        box.innerHTML = `<strong>${escapeHtml(res.doctor.name)}</strong>'s PIN: <span class="font-mono font-bold">${res.pin}</span><br><span class="text-[11px] text-slate-500">Save this now — it won't be shown again.</span>`;
         paint();
       } else {
         notifications.toast('Error', res.error, 'error');
       }
+    });
+
+    root.querySelectorAll('[data-action="reset-doctor-pin"]').forEach(b => {
+      b.addEventListener('click', async () => {
+        if (!confirm(`Reset the PIN for ${b.dataset.doctorName}? Their old PIN will stop working.`)) return;
+        const res = await store.resetDoctorPin(b.dataset.doctorId);
+        if (res.ok) {
+          const box = root.querySelector('#new-doctor-pin-box');
+          box.classList.remove('hidden');
+          box.innerHTML = `New PIN for <strong>${escapeHtml(b.dataset.doctorName)}</strong>: <span class="font-mono font-bold">${res.pin}</span><br><span class="text-[11px] text-slate-500">Save this now — it won't be shown again.</span>`;
+        } else {
+          notifications.toast('Error', res.error, 'error');
+        }
+      });
     });
 
     root.querySelectorAll('[data-action="edit-doctor"]').forEach(b => {
@@ -4771,21 +4827,8 @@ function autoEnterRole() {
     }
     return false; // named staff exist — let renderLogin show the name-select screen
   }
-  if (PENDING_ROLE === 'doctor' && isPinUnlocked('doctor')) {
-    const doctors = store.getState().doctors;
-    let doctorId = null;
-    if (doctors.length === 1) {
-      doctorId = doctors[0].id;
-    } else if (doctors.length > 1) {
-      const lastId = localStorage.getItem(`shq_last_doctor_${store.getState().hospitalId}`);
-      if (lastId && doctors.some(d => d.id === lastId)) doctorId = lastId;
-    }
-    if (doctorId) {
-      store.loginDoctor(doctorId);
-      window.location.hash = '#/doctor';
-      return true;
-    }
-    return false; // let renderLogin show the doctor-selection screen
+  if (PENDING_ROLE === 'doctor') {
+    return false; // doctors always identify themselves + enter their own PIN
   }
   if (PENDING_ROLE === 'manager' && isPinUnlocked('manager')) {
     store.loginManager();
