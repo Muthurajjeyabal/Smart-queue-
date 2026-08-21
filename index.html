@@ -482,6 +482,36 @@ const STORAGE_KEY = 'shq_v1';
 
 const DEFAULT_AVG_CONSULT = 10; // minutes
 
+// Doctor working schedule — default is "available every day, 9 AM–9 PM"
+// until a Manager customizes it per doctor.
+const WEEKDAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+const WEEKDAY_LABELS = { sun: 'Sunday', mon: 'Monday', tue: 'Tuesday', wed: 'Wednesday', thu: 'Thursday', fri: 'Friday', sat: 'Saturday' };
+function defaultSchedule() {
+  const s = {};
+  WEEKDAYS.forEach(d => { s[d] = { active: true, start: '09:00', end: '21:00' }; });
+  return s;
+}
+function getDoctorSchedule(doctor) {
+  return doctor && doctor.schedule ? doctor.schedule : defaultSchedule();
+}
+// Checks a date (YYYY-MM-DD) + optional time (HH:MM) against a doctor's schedule.
+// Returns { ok, error } — error is a friendly message when unavailable.
+function checkDoctorAvailability(doctor, dateStr, timeStr) {
+  if (!dateStr) return { ok: true };
+  const schedule = getDoctorSchedule(doctor);
+  const day = WEEKDAYS[new Date(dateStr + 'T00:00:00').getDay()];
+  const daySchedule = schedule[day];
+  if (!daySchedule || !daySchedule.active) {
+    const openDays = WEEKDAYS.filter(d => schedule[d]?.active).map(d => WEEKDAY_LABELS[d]);
+    return { ok: false, error: `${doctor.name} is not available on ${WEEKDAY_LABELS[day]}. Available: ${openDays.join(', ') || 'no days set'}` };
+  }
+  if (timeStr && (timeStr < daySchedule.start || timeStr > daySchedule.end)) {
+    return { ok: false, error: `${doctor.name} is available on ${WEEKDAY_LABELS[day]} from ${daySchedule.start} to ${daySchedule.end}` };
+  }
+  return { ok: true };
+}
+
+
 // Cross-hospital "find shortest wait" discovery — built, but off for now.
 // Flip to true (and re-upload) whenever ready to launch it.
 const EXPLORE_FEATURE_ENABLED = false;
@@ -826,7 +856,7 @@ class Store {
     // a fresh hospital simply starts with zero doctors, no placeholder created)
     let { data: staffRows } = await sb
       .from('staff')
-      .select('id,hospital_id,role,name,specialty,avg_consult_min,active,assigned_reception_id,created_at')
+      .select('id,hospital_id,role,name,specialty,avg_consult_min,active,assigned_reception_id,schedule,created_at')
       .eq('hospital_id', hospital.id)
       .eq('role', 'doctor')
       .order('created_at', { ascending: true });
@@ -873,6 +903,7 @@ class Store {
         nextToken: statusRow.next_token || 1,
         active: staffRow.active !== false,
         assignedReceptionId: staffRow.assigned_reception_id || null,
+        schedule: staffRow.schedule || null,
       };
     });
 
@@ -945,7 +976,7 @@ class Store {
         avg_consult_min: DEFAULT_AVG_CONSULT,
         active: true,
         pin,
-      }).select('id,hospital_id,role,name,specialty,avg_consult_min,active,assigned_reception_id').single();
+      }).select('id,hospital_id,role,name,specialty,avg_consult_min,active,assigned_reception_id,schedule').single();
       if (error || !staffRow) throw error || new Error('Insert failed');
 
       const { data: statusRow } = await sb.from('doctor_status').insert({
@@ -970,6 +1001,7 @@ class Store {
         pauseReason: null,
         nextToken: 1,
         assignedReceptionId: null,
+        schedule: null,
       });
       this.notify();
       return { ok: true, doctor: this.getDoctor(staffRow.id), pin };
@@ -1413,6 +1445,20 @@ class Store {
     } catch (e) {
       console.error(e);
       return { ok: false, error: 'Could not update assignment' };
+    }
+  }
+
+  async setDoctorSchedule(doctorId, schedule) {
+    const doc = this.getDoctor(doctorId);
+    if (!doc) return { ok: false, error: 'Doctor not found' };
+    try {
+      await sb.from('staff').update({ schedule }).eq('id', doctorId);
+      doc.schedule = schedule;
+      this.notify();
+      return { ok: true };
+    } catch (e) {
+      console.error(e);
+      return { ok: false, error: 'Could not update schedule' };
     }
   }
 
@@ -3522,9 +3568,10 @@ function showAppointmentModal({ phone, name }) {
           </div>
           <div>
             <label class="text-xs font-medium text-slate-500 mb-1 block">Doctor</label>
-            <select name="doctorId" required class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent text-sm outline-none focus:ring-2 focus:ring-violet-500 transition">
+            <select name="doctorId" id="appt-doctor-select" required class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent text-sm outline-none focus:ring-2 focus:ring-violet-500 transition">
               ${doctors.map(d => `<option value="${d.id}">${escapeHtml(d.name)} — ${escapeHtml(d.specialty)}</option>`).join('')}
             </select>
+            <p id="appt-availability-hint" class="text-[11px] text-slate-400 mt-1"></p>
           </div>
           <div class="grid grid-cols-2 gap-3">
             <div>
@@ -3560,6 +3607,28 @@ function showAppointmentModal({ phone, name }) {
     }
   });
 
+  function updateAvailabilityHint() {
+    const doctorId = overlay.querySelector('#appt-doctor-select')?.value;
+    const hint = overlay.querySelector('#appt-availability-hint');
+    if (!hint) return;
+    const doc = doctors.find(d => d.id === doctorId);
+    if (!doc) { hint.textContent = ''; return; }
+    const schedule = getDoctorSchedule(doc);
+    const openDays = WEEKDAYS.filter(d => schedule[d]?.active);
+    if (openDays.length === WEEKDAYS.length && openDays.every(d => schedule[d].start === '09:00' && schedule[d].end === '21:00')) {
+      hint.textContent = ''; // default schedule, no need to clutter the UI
+      return;
+    }
+    if (!openDays.length) {
+      hint.textContent = `${doc.name} has no available days set. Please contact the hospital directly.`;
+      return;
+    }
+    const grouped = openDays.map(d => `${WEEKDAY_LABELS[d].slice(0,3)} ${schedule[d].start}-${schedule[d].end}`).join(', ');
+    hint.textContent = `Available: ${grouped}`;
+  }
+  overlay.querySelector('#appt-doctor-select')?.addEventListener('change', updateAvailabilityHint);
+  updateAvailabilityHint();
+
   overlay.querySelector('#appt-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
@@ -3567,6 +3636,20 @@ function showAppointmentModal({ phone, name }) {
     const label = overlay.querySelector('#appt-submit-label');
     const err = overlay.querySelector('#appt-error');
     err.classList.add('hidden');
+
+    const doctorId = fd.get('doctorId');
+    const preferredDate = fd.get('preferredDate');
+    const preferredTime = fd.get('preferredTime');
+    const doc = doctors.find(d => d.id === doctorId);
+    if (doc) {
+      const avail = checkDoctorAvailability(doc, preferredDate, preferredTime);
+      if (!avail.ok) {
+        err.textContent = avail.error;
+        err.classList.remove('hidden');
+        return;
+      }
+    }
+
     btn.disabled = true;
     label.innerHTML = `${icon('loader-2', 16, 'animate-spin')} Sending…`;
 
@@ -3575,9 +3658,9 @@ function showAppointmentModal({ phone, name }) {
       phone,
       age: fd.get('age'),
       gender: fd.get('gender'),
-      doctorId: fd.get('doctorId'),
-      preferredDate: fd.get('preferredDate'),
-      preferredTime: fd.get('preferredTime'),
+      doctorId,
+      preferredDate,
+      preferredTime,
       notes: fd.get('notes'),
     });
 
@@ -3755,6 +3838,7 @@ function renderManager(root) {
                     </div>
                     <div class="flex gap-2 mt-2.5">
                       <button data-action="edit-doctor" data-doctor-id="${d.id}" class="text-xs px-2.5 py-1 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:border-rose-400 transition">Edit</button>
+                      <button data-action="toggle-schedule" data-doctor-id="${d.id}" class="text-xs px-2.5 py-1 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:border-rose-400 transition">Schedule</button>
                       <button data-action="reset-doctor-pin" data-doctor-id="${d.id}" data-doctor-name="${escapeHtml(d.name)}" class="text-xs px-2.5 py-1 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:border-rose-400 transition">Reset PIN</button>
                       <button data-action="deactivate-doctor" data-doctor-id="${d.id}" class="text-xs px-2.5 py-1 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-rose-600 hover:border-rose-400 transition">Deactivate</button>
                     </div>
@@ -3765,6 +3849,23 @@ function renderManager(root) {
                         <button type="submit" class="flex-1 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold transition">Save</button>
                         <button type="button" data-action="cancel-edit-doctor" class="flex-1 py-2 rounded-xl bg-slate-200 dark:bg-slate-700 text-xs font-semibold transition">Cancel</button>
                       </div>
+                    </form>
+                    <form data-schedule-form="${d.id}" class="hidden mt-2.5 space-y-1.5 p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700">
+                      ${WEEKDAYS.map(day => {
+                        const sched = getDoctorSchedule(d)[day] || { active: false, start: '09:00', end: '21:00' };
+                        return `
+                        <div class="flex items-center gap-2 text-xs">
+                          <label class="flex items-center gap-1.5 w-24 shrink-0">
+                            <input type="checkbox" name="active_${day}" ${sched.active ? 'checked' : ''} class="w-3.5 h-3.5 rounded border-slate-300" />
+                            ${WEEKDAY_LABELS[day].slice(0,3)}
+                          </label>
+                          <input type="time" name="start_${day}" value="${sched.start}" class="flex-1 px-1.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent text-[11px] outline-none" />
+                          <span class="text-slate-400">–</span>
+                          <input type="time" name="end_${day}" value="${sched.end}" class="flex-1 px-1.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent text-[11px] outline-none" />
+                        </div>
+                      `;
+                      }).join('')}
+                      <button type="submit" class="w-full mt-1.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold transition">Save Schedule</button>
                     </form>
                   </div>
                 `;
@@ -4220,6 +4321,38 @@ function renderManager(root) {
         const res = await store.setDoctorReception(sel.dataset.doctorId, sel.value || null);
         if (res.ok) notifications.toast('Updated', 'Appointment routing saved', 'success');
         else notifications.toast('Error', res.error, 'error');
+      });
+    });
+
+    root.querySelectorAll('[data-action="toggle-schedule"]').forEach(b => {
+      b.addEventListener('click', () => {
+        root.querySelector(`[data-schedule-form="${b.dataset.doctorId}"]`)?.classList.toggle('hidden');
+      });
+    });
+
+    root.querySelectorAll('[data-schedule-form]').forEach(form => {
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const fd = new FormData(e.target);
+        const schedule = {};
+        WEEKDAYS.forEach(day => {
+          schedule[day] = {
+            active: fd.get(`active_${day}`) === 'on',
+            start: fd.get(`start_${day}`) || '09:00',
+            end: fd.get(`end_${day}`) || '21:00',
+          };
+        });
+        const btn = e.target.querySelector('button[type="submit"]');
+        btn.disabled = true;
+        btn.textContent = 'Saving…';
+        const res = await store.setDoctorSchedule(form.dataset.scheduleForm, schedule);
+        btn.disabled = false;
+        btn.textContent = 'Save Schedule';
+        if (res.ok) {
+          notifications.toast('Schedule saved', 'Patients will only see valid days/times', 'success');
+        } else {
+          notifications.toast('Error', res.error, 'error');
+        }
       });
     });
 
