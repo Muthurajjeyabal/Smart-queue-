@@ -17,7 +17,7 @@
 
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { height: 100%; font-family: system-ui, -apple-system, sans-serif; }
+    html, body { height: 100%; font-family: 'Inter', system-ui, -apple-system, sans-serif; }
     body { background: #f8fafc; color: #0f172a; }
     #splash {
       position: fixed; inset: 0; z-index: 9999;
@@ -47,13 +47,16 @@
       color: #fff; font-weight: 600; font-size: 14px;
     }
   </style>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;0,800;1,500&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
       darkMode: 'class',
       theme: {
         extend: {
-          fontFamily: { sans: ['system-ui','sans-serif'], display: ['system-ui','sans-serif'] },
+          fontFamily: { sans: ['Inter','system-ui','sans-serif'], display: ['"Plus Jakarta Sans"','system-ui','sans-serif'] },
           colors: {
             brand: { 50:'#f0fdfa',100:'#ccfbf1',200:'#99f6e4',300:'#5eead4',400:'#2dd4bf',500:'#14b8a6',600:'#0d9488',700:'#0f766e',800:'#115e59',900:'#134e4a',950:'#042f2e' }
           },
@@ -321,6 +324,132 @@ select:focus-visible {
 @media (min-width: 640px) and (max-width: 1023px) {
   .role-card { padding: 1.125rem; }
 }
+
+/* ============================================================
+   Premium polish — typography, elevation, micro-interactions
+   ============================================================ */
+
+/* Refined typography rhythm */
+.font-display {
+  letter-spacing: -0.02em;
+  font-feature-settings: "ss01" on, "cv01" on;
+}
+h1, h2, h3 { letter-spacing: -0.015em; }
+body { letter-spacing: -0.005em; }
+
+/* Layered, tinted shadow system — softer and more expensive-looking */
+.shadow-card {
+  box-shadow:
+    0 1px 1px rgba(15,23,42,0.02),
+    0 2px 4px rgba(15,23,42,0.03),
+    0 8px 20px -6px rgba(15,23,42,0.07),
+    0 0 0 1px rgba(15,23,42,0.02);
+  transition: box-shadow 0.3s cubic-bezier(0.16, 1, 0.3, 1), transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.dark .shadow-card {
+  box-shadow:
+    0 1px 1px rgba(0,0,0,0.15),
+    0 2px 4px rgba(0,0,0,0.15),
+    0 8px 24px -6px rgba(0,0,0,0.35),
+    0 0 0 1px rgba(255,255,255,0.04);
+}
+.shadow-soft {
+  box-shadow:
+    0 2px 4px -1px rgba(13,148,136,0.15),
+    0 6px 16px -4px rgba(13,148,136,0.22);
+}
+.shadow-glow {
+  box-shadow:
+    0 4px 12px -2px rgba(13,148,136,0.25),
+    0 12px 32px -8px rgba(13,148,136,0.35),
+    0 0 0 1px rgba(255,255,255,0.08) inset;
+}
+
+/* Premium glossy buttons — subtle inner highlight like native/expensive UI */
+button.bg-brand-600, button.bg-rose-600, button.bg-violet-600, button.bg-sky-600, button.bg-emerald-600 {
+  position: relative;
+  background-image: linear-gradient(180deg, rgba(255,255,255,0.16), rgba(255,255,255,0) 60%);
+  background-blend-mode: overlay;
+}
+button.bg-brand-600:active, button.bg-rose-600:active, button.bg-violet-600:active, button.bg-sky-600:active, button.bg-emerald-600:active {
+  filter: brightness(0.96);
+}
+
+/* Card hover — subtle lift with tinted shadow, feels alive without being flashy */
+.shadow-card:hover {
+  box-shadow:
+    0 2px 4px rgba(15,23,42,0.03),
+    0 4px 8px rgba(15,23,42,0.04),
+    0 16px 32px -8px rgba(15,23,42,0.1),
+    0 0 0 1px rgba(15,23,42,0.03);
+}
+.dark .shadow-card:hover {
+  box-shadow:
+    0 2px 4px rgba(0,0,0,0.2),
+    0 4px 8px rgba(0,0,0,0.2),
+    0 16px 40px -8px rgba(0,0,0,0.45),
+    0 0 0 1px rgba(255,255,255,0.06);
+}
+
+/* Staggered list entrance — items cascade in rather than popping together */
+#queue-list > *, .divide-y > * {
+  animation: item-cascade 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+#queue-list > *:nth-child(1), .divide-y > *:nth-child(1) { animation-delay: 0.02s; }
+#queue-list > *:nth-child(2), .divide-y > *:nth-child(2) { animation-delay: 0.05s; }
+#queue-list > *:nth-child(3), .divide-y > *:nth-child(3) { animation-delay: 0.08s; }
+#queue-list > *:nth-child(4), .divide-y > *:nth-child(4) { animation-delay: 0.11s; }
+#queue-list > *:nth-child(5), .divide-y > *:nth-child(5) { animation-delay: 0.14s; }
+#queue-list > *:nth-child(n+6), .divide-y > *:nth-child(n+6) { animation-delay: 0.16s; }
+@keyframes item-cascade {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Number count-up target styling (JS drives the counting) */
+.count-up { font-variant-numeric: tabular-nums; }
+
+/* Refined input focus — premium "lift + glow" instead of a flat ring */
+input, select, textarea {
+  transition: box-shadow 0.25s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.25s ease, transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+input:focus, select:focus, textarea:focus {
+  transform: translateY(-1.5px);
+  box-shadow: 0 4px 14px -4px rgba(13,148,136,0.25);
+}
+
+/* Metric card value emphasis */
+main .font-display.text-2xl, main .font-display.text-3xl {
+  background: linear-gradient(180deg, currentColor, currentColor);
+}
+
+/* Success burst — a small celebratory pulse ring, tasteful not gimmicky */
+@keyframes success-burst {
+  0% { box-shadow: 0 0 0 0 rgba(16,185,129,0.5); }
+  100% { box-shadow: 0 0 0 14px rgba(16,185,129,0); }
+}
+.success-burst { animation: success-burst 0.7s cubic-bezier(0.16, 1, 0.3, 1); }
+
+/* Sidebar nav active indicator — smooth slide instead of instant swap */
+aside [data-tab], #mobile-nav-drawer [data-tab] {
+  transition: background-color 0.25s cubic-bezier(0.16, 1, 0.3, 1), color 0.25s ease, transform 0.15s ease;
+}
+aside [data-tab]:active, #mobile-nav-drawer [data-tab]:active { transform: scale(0.98); }
+
+/* Role-select cards on login — refined premium hover */
+.role-card {
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.3s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.3s ease;
+}
+.role-card:hover {
+  transform: translateY(-3px);
+}
+
+/* Login hero icon — subtle breathing glow for a premium "alive" feel */
+@keyframes hero-glow {
+  0%, 100% { box-shadow: 0 8px 30px -6px rgba(13,148,136,0.35); }
+  50% { box-shadow: 0 12px 40px -6px rgba(13,148,136,0.5); }
+}
+.shadow-glow { animation: hero-glow 3.5s ease-in-out infinite; }
 
 /* Print / accessibility */
 @media (prefers-reduced-motion: reduce) {
