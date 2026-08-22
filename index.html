@@ -1037,6 +1037,7 @@ class Store {
         active: staffRow.active !== false,
         assignedReceptionId: staffRow.assigned_reception_id || null,
         schedule: staffRow.schedule || null,
+        extendedUntil: statusRow.extended_until || null,
       };
     });
 
@@ -1592,6 +1593,34 @@ class Store {
     } catch (e) {
       console.error(e);
       return { ok: false, error: 'Could not update schedule' };
+    }
+  }
+
+  // Doctor extends their own hours for TODAY only — does not touch the
+  // permanent weekly schedule the Manager set.
+  async extendDoctorHours(doctorId, minutes) {
+    const doc = this.getDoctor(doctorId);
+    if (!doc || !doc.doctorStatusId) return { ok: false, error: 'Doctor not found' };
+    try {
+      const now = new Date();
+      const schedule = getDoctorSchedule(doc);
+      const day = WEEKDAYS[now.getDay()];
+      const daySchedule = schedule[day] || { end: '21:00' };
+      const nowTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+      // Extend from whichever is later: their scheduled end, their current
+      // extension, or right now — so repeated extensions stack sensibly.
+      const base = [daySchedule.end, doc.extendedUntil, nowTime].filter(Boolean).sort().pop();
+      const [bh, bm] = base.split(':').map(Number);
+      const totalMinutes = bh * 60 + bm + minutes;
+      const newUntil = `${String(Math.floor(totalMinutes / 60) % 24).padStart(2, '0')}:${String(totalMinutes % 60).padStart(2, '0')}`;
+
+      await sb.from('doctor_status').update({ extended_until: newUntil }).eq('id', doc.doctorStatusId);
+      doc.extendedUntil = newUntil;
+      this.notify();
+      return { ok: true, until: newUntil };
+    } catch (e) {
+      console.error(e);
+      return { ok: false, error: 'Could not extend hours' };
     }
   }
 
@@ -2413,11 +2442,18 @@ function doctorStatusBadge(status) {
 // so the dashboard shows "Off Duty" / "Starts 09:00" / "On Rounds" outside
 // their actual working hours, instead of a stale "Available" forever.
 function doctorAvailabilityBadge(doctor) {
+  // If they're actively with a patient, always show that — never show
+  // "Off Duty" while they're mid-consultation, even past scheduled hours.
+  if (doctor.status === 'consulting') {
+    return doctorStatusBadge(doctor.status);
+  }
+
   const now = new Date();
   const day = WEEKDAYS[now.getDay()];
   const schedule = getDoctorSchedule(doctor);
   const daySchedule = schedule[day];
   const nowTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  const effectiveEnd = (daySchedule && doctor.extendedUntil && doctor.extendedUntil > daySchedule.end) ? doctor.extendedUntil : daySchedule?.end;
 
   if (!daySchedule || !daySchedule.active) {
     return doctorStatusBadge('off_duty');
@@ -2425,7 +2461,7 @@ function doctorAvailabilityBadge(doctor) {
   if (nowTime < daySchedule.start) {
     return `<span class="badge bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400"><span class="w-1.5 h-1.5 rounded-full bg-slate-400 live-dot"></span>Starts ${daySchedule.start}</span>`;
   }
-  if (nowTime > daySchedule.end) {
+  if (nowTime > effectiveEnd) {
     return doctorStatusBadge('off_duty');
   }
   const breaks = (daySchedule.breaks || []).filter(b => b.start && b.end);
@@ -5284,12 +5320,15 @@ function renderDoctor(root) {
         <!-- Status + Metrics -->
         <div class="flex flex-wrap items-center gap-3 justify-between">
           <div class="flex items-center gap-3">
-            ${doctorStatusBadge(doctor.status)}
+            ${doctorAvailabilityBadge(doctor)}
             <span class="text-sm text-slate-500">Avg consult · <strong class="text-slate-800 dark:text-slate-200">${doctor.avgConsultMin} min</strong></span>
           </div>
-          <div class="flex gap-2 text-sm">
+          <div class="flex items-center gap-2 text-sm">
             <span class="px-3 py-1 rounded-full bg-slate-100 dark:bg-slate-800 font-medium">${snap.totalSeen} seen today</span>
             <span class="px-3 py-1 rounded-full bg-brand-50 dark:bg-brand-950 text-brand-700 dark:text-brand-300 font-medium">${snap.totalWaiting} waiting</span>
+            <button data-action="extend-hours" class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-violet-50 dark:bg-violet-950 text-violet-700 dark:text-violet-300 hover:bg-violet-100 dark:hover:bg-violet-900 transition" title="Extend today's hours by 30 minutes — doesn't change your permanent schedule">
+              ${icon('clock', 13)} +30 min today${doctor.extendedUntil ? ` (until ${doctor.extendedUntil})` : ''}
+            </button>
           </div>
         </div>
 
@@ -5384,13 +5423,19 @@ function renderDoctor(root) {
   doctor_unsub = store.subscribe(paint);
   bus.on('queue:updated', paint);
 
-  root.addEventListener('click', (e) => {
+  root.addEventListener('click', async (e) => {
     const btn = e.target.closest('[data-action], [data-status]');
     if (!btn) return;
 
     if (btn.dataset.action === 'logout') {
       store.logout('doctor');
       window.location.hash = '#/';
+      return;
+    }
+    if (btn.dataset.action === 'extend-hours') {
+      const res = await store.extendDoctorHours(doctorId, 30);
+      if (res.ok) notifications.toast('Hours extended', `You're now available until ${res.until} today`, 'success');
+      else notifications.toast('Error', res.error, 'error');
       return;
     }
     if (btn.dataset.action === 'start') {
