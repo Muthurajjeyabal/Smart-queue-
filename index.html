@@ -636,7 +636,8 @@ function checkDoctorAvailability(doctor, dateStr, timeStr) {
   if (timeStr && (timeStr < daySchedule.start || timeStr > daySchedule.end)) {
     return { ok: false, error: `${doctor.name} is available on ${WEEKDAY_LABELS[day]} from ${daySchedule.start} to ${daySchedule.end}` };
   }
-  const breaks = (daySchedule.breaks || []).filter(b => b.start && b.end);
+  const skippingBreaksToday = doctor.skipBreakToday && dateStr === todayKey();
+  const breaks = (skippingBreaksToday ? [] : (daySchedule.breaks || [])).filter(b => b.start && b.end);
   if (timeStr && breaks.some(b => timeInRange(timeStr, b.start, b.end))) {
     const breakList = breaks.map(b => `${b.start}-${b.end}`).join(', ');
     return { ok: false, error: `${doctor.name} is on hospital rounds during ${breakList}. Please choose a different time.` };
@@ -1038,6 +1039,7 @@ class Store {
         assignedReceptionId: staffRow.assigned_reception_id || null,
         schedule: staffRow.schedule || null,
         extendedUntil: statusRow.extended_until || null,
+        skipBreakToday: !!statusRow.skip_break_today,
       };
     });
 
@@ -1621,6 +1623,24 @@ class Store {
     } catch (e) {
       console.error(e);
       return { ok: false, error: 'Could not extend hours' };
+    }
+  }
+
+  // Doctor skips their scheduled break/rounds for TODAY only — patients can
+  // then book appointments during that window and the badge won't show
+  // "On Rounds". Doesn't touch the permanent weekly schedule.
+  async toggleSkipBreak(doctorId) {
+    const doc = this.getDoctor(doctorId);
+    if (!doc || !doc.doctorStatusId) return { ok: false, error: 'Doctor not found' };
+    try {
+      const next = !doc.skipBreakToday;
+      await sb.from('doctor_status').update({ skip_break_today: next }).eq('id', doc.doctorStatusId);
+      doc.skipBreakToday = next;
+      this.notify();
+      return { ok: true, skipping: next };
+    } catch (e) {
+      console.error(e);
+      return { ok: false, error: 'Could not update' };
     }
   }
 
@@ -2464,7 +2484,7 @@ function doctorAvailabilityBadge(doctor) {
   if (nowTime > effectiveEnd) {
     return doctorStatusBadge('off_duty');
   }
-  const breaks = (daySchedule.breaks || []).filter(b => b.start && b.end);
+  const breaks = (doctor.skipBreakToday ? [] : (daySchedule.breaks || [])).filter(b => b.start && b.end);
   if (breaks.some(b => nowTime >= b.start && nowTime <= b.end)) {
     return doctorStatusBadge('on_rounds');
   }
@@ -5329,6 +5349,9 @@ function renderDoctor(root) {
             <button data-action="extend-hours" class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-violet-50 dark:bg-violet-950 text-violet-700 dark:text-violet-300 hover:bg-violet-100 dark:hover:bg-violet-900 transition" title="Extend today's hours by 30 minutes — doesn't change your permanent schedule">
               ${icon('clock', 13)} +30 min today${doctor.extendedUntil ? ` (until ${doctor.extendedUntil})` : ''}
             </button>
+            <button data-action="toggle-skip-break" class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold ${doctor.skipBreakToday ? 'bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300' : 'bg-orange-50 dark:bg-orange-950 text-orange-700 dark:text-orange-300'} transition" title="Skip today's scheduled break/rounds — doesn't change your permanent schedule">
+              ${icon(doctor.skipBreakToday ? 'check' : 'coffee', 13)} ${doctor.skipBreakToday ? 'Skipping break today' : 'Skip break today'}
+            </button>
           </div>
         </div>
 
@@ -5435,6 +5458,12 @@ function renderDoctor(root) {
     if (btn.dataset.action === 'extend-hours') {
       const res = await store.extendDoctorHours(doctorId, 30);
       if (res.ok) notifications.toast('Hours extended', `You're now available until ${res.until} today`, 'success');
+      else notifications.toast('Error', res.error, 'error');
+      return;
+    }
+    if (btn.dataset.action === 'toggle-skip-break') {
+      const res = await store.toggleSkipBreak(doctorId);
+      if (res.ok) notifications.toast(res.skipping ? 'Break skipped for today' : 'Break restored', res.skipping ? 'Patients can now book during your usual break time' : '', 'success');
       else notifications.toast('Error', res.error, 'error');
       return;
     }
