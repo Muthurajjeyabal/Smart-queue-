@@ -3793,7 +3793,9 @@ function renderManager(root) {
     return;
   }
 
-  let activeTab = 'doctors'; // doctors | appointments | reports
+  let activeTab = 'dashboard'; // dashboard | doctors | staff | appointments | patients | queue | reports | settings
+  let mobileNavOpen = false;
+  let managerQueueFilter = '';
   let reportData = null;
   let reportDays = 30;
   let reportMode = 'days'; // 'days' | 'range'
@@ -3826,36 +3828,148 @@ function renderManager(root) {
     const resolvedAppointments = state.appointments.filter(a => a.status !== 'pending').slice(0, 20);
     const activeDocs = state.doctors.filter(d => d.active !== false);
     const inactiveDocs = state.doctors.filter(d => d.active === false);
+    const todaysPatients = state.patients.filter(p => p.day === state.day);
+    const todayStats = {
+      total: todaysPatients.length,
+      waiting: todaysPatients.filter(p => p.status === 'waiting').length,
+      consulting: todaysPatients.filter(p => p.status === 'consulting').length,
+      completed: todaysPatients.filter(p => p.status === 'completed').length,
+      noShow: todaysPatients.filter(p => p.status === 'no_show').length,
+    };
 
     const TABS = [
+      { id: 'dashboard', label: 'Dashboard', icon: 'home', badge: null },
       { id: 'doctors', label: 'Doctors', icon: 'stethoscope', badge: activeDocs.length },
-      { id: 'staff', label: 'Reception Staff', icon: 'users', badge: store.getActiveReceptionStaff().length || null },
+      { id: 'staff', label: 'Reception', icon: 'users', badge: store.getActiveReceptionStaff().length || null },
       { id: 'appointments', label: 'Appointments', icon: 'calendar-clock', badge: pendingAppointments.length },
+      { id: 'patients', label: 'Patients', icon: 'users-round', badge: null },
+      { id: 'queue', label: 'Queue', icon: 'list-ordered', badge: null },
       { id: 'reports', label: 'Reports', icon: 'bar-chart-3', badge: null },
       { id: 'settings', label: 'Settings', icon: 'settings', badge: null },
     ];
 
     root.innerHTML = `
-      ${headerBar({
-        title: 'Hospital Manager',
-        subtitle: state.hospitalName,
-        rightHtml: `
-          ${themeToggleBtn()}
-          <button data-action="logout" class="p-2 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition">
-            ${icon('log-out', 18)}
-          </button>
-        `,
-      })}
+      <div class="flex-1 flex min-h-screen">
+        <!-- Desktop Sidebar -->
+        <aside class="hidden lg:flex lg:flex-col w-60 shrink-0 bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800">
+          <div class="p-5 border-b border-slate-100 dark:border-slate-800 flex items-center gap-2.5">
+            <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-rose-500 to-orange-600 text-white flex items-center justify-center shrink-0">
+              ${icon('clock', 18)}
+            </div>
+            <div class="min-w-0">
+              <p class="font-display font-bold text-sm truncate">Smart Queue</p>
+              <p class="text-[11px] text-slate-500 truncate">${escapeHtml(state.hospitalName || '')}</p>
+            </div>
+          </div>
+          <nav class="flex-1 p-3 space-y-1 overflow-y-auto">
+            ${TABS.map(item => `
+              <button data-tab="${item.id}" class="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm font-medium transition ${activeTab === item.id ? 'bg-rose-600 text-white' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'}">
+                ${icon(item.icon, 17)}
+                <span class="flex-1 text-left">${item.label}</span>
+                ${item.badge ? `<span class="text-[10px] font-bold ${activeTab === item.id ? 'bg-white/25' : 'bg-rose-500 text-white'} px-1.5 py-0.5 rounded-full">${item.badge}</span>` : ''}
+              </button>
+            `).join('')}
+          </nav>
+          <div class="p-3 border-t border-slate-100 dark:border-slate-800 space-y-1">
+            <button data-action="toggle-theme-sidebar" class="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+              ${icon('moon', 17)} Toggle Theme
+            </button>
+            <button data-action="logout" class="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+              ${icon('log-out', 17)} Logout
+            </button>
+          </div>
+        </aside>
+
+        <!-- Mobile drawer -->
+        <div id="mobile-nav-backdrop" class="lg:hidden fixed inset-0 bg-black/40 z-40 ${mobileNavOpen ? '' : 'hidden'}" data-action="close-mobile-nav"></div>
+        <div id="mobile-nav-drawer" class="lg:hidden fixed top-0 left-0 bottom-0 w-64 bg-white dark:bg-slate-900 z-50 shadow-2xl transition-transform duration-300 ${mobileNavOpen ? 'translate-x-0' : '-translate-x-full'}">
+          <div class="p-5 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
+            <div class="flex items-center gap-2.5 min-w-0">
+              <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-rose-500 to-orange-600 text-white flex items-center justify-center shrink-0">
+                ${icon('clock', 18)}
+              </div>
+              <div class="min-w-0">
+                <p class="font-display font-bold text-sm truncate">Smart Queue</p>
+                <p class="text-[11px] text-slate-500 truncate">${escapeHtml(state.hospitalName || '')}</p>
+              </div>
+            </div>
+            <button data-action="close-mobile-nav" class="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 shrink-0">${icon('x', 18)}</button>
+          </div>
+          <nav class="p-3 space-y-1 overflow-y-auto">
+            ${TABS.map(item => `
+              <button data-tab="${item.id}" class="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm font-medium transition ${activeTab === item.id ? 'bg-rose-600 text-white' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'}">
+                ${icon(item.icon, 17)}
+                <span class="flex-1 text-left">${item.label}</span>
+                ${item.badge ? `<span class="text-[10px] font-bold ${activeTab === item.id ? 'bg-white/25' : 'bg-rose-500 text-white'} px-1.5 py-0.5 rounded-full">${item.badge}</span>` : ''}
+              </button>
+            `).join('')}
+            <div class="pt-2 mt-2 border-t border-slate-100 dark:border-slate-800 space-y-1">
+              <button data-action="logout" class="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+                ${icon('log-out', 17)} Logout
+              </button>
+            </div>
+          </nav>
+        </div>
+
+        <div class="flex-1 flex flex-col min-w-0">
+          ${headerBar({
+            title: TABS.find(t => t.id === activeTab)?.label || 'Hospital Manager',
+            subtitle: state.hospitalName,
+            rightHtml: `
+              <button data-action="open-mobile-nav" class="lg:hidden p-2 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+                ${icon('menu', 20)}
+              </button>
+              ${themeToggleBtn()}
+            `,
+          })}
 
       <main class="flex-1 max-w-4xl mx-auto w-full px-4 sm:px-6 py-5 view-enter">
-        <div class="flex gap-2 mb-5 overflow-x-auto pb-1">
-          ${TABS.map(tb => `
-            <button data-tab="${tb.id}" class="shrink-0 flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium transition ${activeTab === tb.id ? 'bg-rose-600 text-white' : 'bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300'}">
-              ${icon(tb.icon, 15)} ${tb.label}
-              ${tb.badge ? `<span class="text-[10px] font-bold ${activeTab === tb.id ? 'bg-white/25' : 'bg-rose-500 text-white'} px-1.5 py-0.5 rounded-full">${tb.badge}</span>` : ''}
-            </button>
-          `).join('')}
-        </div>
+
+        ${activeTab === 'dashboard' ? `
+          <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card p-5 mb-4">
+            <h2 class="font-display font-bold text-base mb-4">Today's Overview</h2>
+            <div class="grid grid-cols-2 sm:grid-cols-5 gap-3">
+              ${metricCard('Total Patients', todayStats.total, '', 'teal')}
+              ${metricCard('Waiting', todayStats.waiting, '', 'amber')}
+              ${metricCard('Consulting', todayStats.consulting, '', 'slate')}
+              ${metricCard('Completed', todayStats.completed, '', 'rose')}
+              ${metricCard('No-show', todayStats.noShow, '', 'slate')}
+            </div>
+          </div>
+
+          <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card p-5 mb-4">
+            <h2 class="font-display font-bold text-base mb-4">Doctor Status</h2>
+            <div class="space-y-2">
+              ${activeDocs.length === 0 ? `<p class="text-sm text-slate-400 text-center py-4">No doctors added yet.</p>` : activeDocs.map(d => {
+                const dSnap = queueEngine.getSnapshot(d.id);
+                const current = d.currentPatientId ? store.getPatient(d.currentPatientId) : null;
+                return `
+                  <div class="flex items-center justify-between gap-3 p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60">
+                    <div class="min-w-0">
+                      <p class="text-sm font-semibold truncate">${escapeHtml(d.name)}</p>
+                      <p class="text-xs text-slate-500">${current ? `Token #${current.token}` : `${dSnap.totalWaiting} waiting`}</p>
+                    </div>
+                    ${doctorStatusBadge(d.status)}
+                  </div>
+                `;
+              }).join('')}
+            </div>
+          </div>
+
+          <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card p-5">
+            <h2 class="font-display font-bold text-base mb-4">Reception Status</h2>
+            <div class="space-y-2">
+              ${state.receptionStaff.filter(s => s.active !== false).length === 0 ? `<p class="text-sm text-slate-400 text-center py-4">No named staff — shared PIN in use.</p>` : state.receptionStaff.filter(s => s.active !== false).map(s => `
+                <div class="flex items-center justify-between gap-3 p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60">
+                  <span class="text-sm font-semibold">${escapeHtml(s.name)}</span>
+                  <span class="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-600">
+                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> Active
+                  </span>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        ` : ''}
 
         ${activeTab === 'doctors' ? `
           <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card p-5">
@@ -4036,6 +4150,93 @@ function renderManager(root) {
                 </div>
               </div>
             ` : ''}
+          </div>
+        ` : ''}
+
+        ${activeTab === 'patients' ? `
+          <div class="space-y-4">
+            <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card p-5">
+              <h2 class="font-display font-bold text-base mb-1">Search Patients</h2>
+              <p class="text-xs text-slate-500 mb-4">Search across all history — not limited to today or any date range.</p>
+              <div class="relative">
+                <span class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">${icon('search', 15)}</span>
+                <input id="patients-search" type="search" value="${escapeHtml(reportSearch)}" placeholder="Search name or mobile number…"
+                  class="w-full pl-9 pr-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm outline-none focus:ring-2 focus:ring-rose-500 transition" />
+              </div>
+            </div>
+
+            <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card overflow-hidden">
+              <div class="p-4 border-b border-slate-100 dark:border-slate-800">
+                <h2 class="font-display font-bold text-sm">${reportSearch.trim() ? `Results (${searchLoading ? '…' : searchResults.length})` : 'Recent Patients'}</h2>
+              </div>
+              <div class="divide-y divide-slate-100 dark:divide-slate-800 max-h-[32rem] overflow-y-auto">
+                ${searchLoading ? `
+                  <div class="p-6 text-center text-sm text-slate-400">${icon('loader-2', 18, 'animate-spin mx-auto mb-2')} Searching…</div>
+                ` : (reportSearch.trim() ? searchResults : todaysPatients.slice().sort((a,b) => new Date(b.createdAt) - new Date(a.createdAt))).length === 0 ? `
+                  <p class="text-sm text-slate-400 text-center py-6">${reportSearch.trim() ? `No matches for "${escapeHtml(reportSearch)}".` : 'No patients yet today.'}</p>
+                ` : (reportSearch.trim() ? searchResults : todaysPatients.slice().sort((a,b) => new Date(b.createdAt) - new Date(a.createdAt))).map(r => {
+                  const doc = store.getDoctor(r.doctorId || r.doctor_id);
+                  const day = r.day;
+                  const token = r.token;
+                  const name = r.name;
+                  const phone = r.phone;
+                  const status = r.status;
+                  return `
+                    <div class="flex items-center gap-3 p-3">
+                      <div class="w-10 h-10 rounded-xl bg-rose-50 dark:bg-rose-950 text-rose-600 dark:text-rose-400 flex items-center justify-center font-display font-bold text-xs token-display shrink-0">
+                        #${token}
+                      </div>
+                      <div class="flex-1 min-w-0">
+                        <p class="text-sm font-semibold truncate">${escapeHtml(name || '')}</p>
+                        <p class="text-xs text-slate-500">${phone} · ${formatDate(day)} · ${doc ? escapeHtml(doc.name) : 'Unknown doctor'}</p>
+                      </div>
+                      ${statusBadge(status)}
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+            </div>
+          </div>
+        ` : ''}
+
+        ${activeTab === 'queue' ? `
+          <div class="space-y-4">
+            ${activeDocs.length > 1 ? `
+              <div class="flex gap-2 overflow-x-auto pb-1">
+                <button data-queue-filter="" class="shrink-0 px-3 py-1.5 rounded-full text-xs font-medium transition ${!managerQueueFilter ? 'bg-rose-600 text-white' : 'bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-600'}">
+                  All Doctors
+                </button>
+                ${activeDocs.map(d => `
+                  <button data-queue-filter="${d.id}" class="shrink-0 px-3 py-1.5 rounded-full text-xs font-medium transition ${managerQueueFilter === d.id ? 'bg-rose-600 text-white' : 'bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-600'}">
+                    ${escapeHtml(d.name)}
+                  </button>
+                `).join('')}
+              </div>
+            ` : ''}
+            <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card overflow-hidden">
+              <div class="p-4 border-b border-slate-100 dark:border-slate-800">
+                <h2 class="font-display font-bold text-sm">Today's Queue (${todaysPatients.filter(p => !managerQueueFilter || p.doctorId === managerQueueFilter).length})</h2>
+              </div>
+              <div class="divide-y divide-slate-100 dark:divide-slate-800 max-h-[32rem] overflow-y-auto">
+                ${todaysPatients.filter(p => !managerQueueFilter || p.doctorId === managerQueueFilter).length === 0 ? `
+                  <p class="text-sm text-slate-400 text-center py-6">No patients in queue today.</p>
+                ` : todaysPatients.filter(p => !managerQueueFilter || p.doctorId === managerQueueFilter).slice().sort((a,b) => b.token - a.token).map(p => {
+                  const doc = store.getDoctor(p.doctorId);
+                  return `
+                    <div class="flex items-center gap-3 p-3 ${p.status === 'consulting' ? 'bg-teal-50/50 dark:bg-teal-950/20' : ''}">
+                      <div class="w-10 h-10 rounded-xl ${p.isEmergency ? 'bg-rose-100 dark:bg-rose-900/40 text-rose-700' : 'bg-rose-50 dark:bg-rose-950 text-rose-600 dark:text-rose-400'} flex items-center justify-center font-display font-bold text-xs token-display shrink-0">
+                        #${p.token}
+                      </div>
+                      <div class="flex-1 min-w-0">
+                        <p class="text-sm font-semibold truncate">${escapeHtml(p.name)}</p>
+                        <p class="text-xs text-slate-500">${p.phone} · ${doc ? escapeHtml(doc.name) : 'Unknown doctor'}</p>
+                      </div>
+                      ${statusBadge(p.status)}
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+            </div>
           </div>
         ` : ''}
 
@@ -4253,6 +4454,8 @@ function renderManager(root) {
           </div>
         ` : ''}
       </main>
+        </div>
+      </div>
     `;
 
     refreshIcons();
@@ -4260,7 +4463,42 @@ function renderManager(root) {
     root.querySelectorAll('[data-tab]').forEach(tb => {
       tb.addEventListener('click', () => {
         activeTab = tb.dataset.tab;
+        mobileNavOpen = false;
         if (activeTab === 'reports' && !reportData) loadReport();
+        paint();
+      });
+    });
+
+    root.querySelector('[data-action="open-mobile-nav"]')?.addEventListener('click', () => {
+      mobileNavOpen = true;
+      paint();
+    });
+    root.querySelectorAll('[data-action="close-mobile-nav"]').forEach(b => {
+      b.addEventListener('click', () => {
+        mobileNavOpen = false;
+        paint();
+      });
+    });
+    root.querySelector('[data-action="toggle-theme-sidebar"]')?.addEventListener('click', () => {
+      toggleTheme();
+      paint();
+    });
+
+    root.querySelector('#patients-search')?.addEventListener('input', (e) => {
+      reportSearch = e.target.value;
+      const caretPos = e.target.selectionStart;
+      paint();
+      const el = root.querySelector('#patients-search');
+      if (el) { el.focus(); el.setSelectionRange(caretPos, caretPos); }
+
+      clearTimeout(searchDebounceTimer);
+      if (!reportSearch.trim()) { searchResults = []; return; }
+      searchDebounceTimer = setTimeout(() => runPatientSearch(reportSearch), 400);
+    });
+
+    root.querySelectorAll('[data-queue-filter]').forEach(b => {
+      b.addEventListener('click', () => {
+        managerQueueFilter = b.dataset.queueFilter;
         paint();
       });
     });
