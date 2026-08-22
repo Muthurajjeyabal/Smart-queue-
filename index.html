@@ -1450,13 +1450,15 @@ class Store {
   // ---------- Background sync helpers (fire-and-forget) ----------
   async _pushPatientInsert(p, attempt = 1) {
     try {
-      if (!p.patientCode) {
-        const { data: code } = await sb.rpc('get_or_create_patient_code', {
+      if (!p._codeConfirmed) {
+        const { data: code } = await sb.rpc('set_or_get_patient_code', {
           p_hospital_id: this.state.hospitalId,
           p_phone: p.phone,
+          p_manual_code: p._manualPatientCode || null,
         });
         if (code) {
           p.patientCode = code;
+          p._codeConfirmed = true;
           this.notify();
         }
       }
@@ -1570,7 +1572,7 @@ class Store {
   }
 
   // ---------- Patient registration & tokens ----------
-  registerWalkIn({ name, phone, isEmergency = false, notes = '', doctorId, isAppointment = false, registeredBy = '', age = null, gender = '' }) {
+  registerWalkIn({ name, phone, isEmergency = false, notes = '', doctorId, isAppointment = false, registeredBy = '', age = null, gender = '', patientCode = '' }) {
     const doc = this.getDoctor(doctorId);
     if (!doc) throw new Error('A doctor must be selected to register a patient');
     const cleanPhone = String(phone).replace(/\D/g, '').slice(-10);
@@ -1588,6 +1590,8 @@ class Store {
       registeredBy,
       age: age !== null && age !== '' ? Number(age) : null,
       gender: gender || '',
+      patientCode: patientCode || null, // if manually entered — otherwise auto-assigned in the background
+      _manualPatientCode: patientCode || null,
       createdAt: new Date().toISOString(),
       consultStartedAt: null,
       consultEndedAt: null,
@@ -1735,7 +1739,7 @@ class Store {
     }
   }
 
-  async approveAppointment(appointmentId) {
+  async approveAppointment(appointmentId, manualPatientCode = '') {
     const appt = this.state.appointments.find(a => a.id === appointmentId);
     if (!appt) return { ok: false, error: 'Request not found' };
     try {
@@ -1769,6 +1773,7 @@ class Store {
         isAppointment: true,
         notes: [appt.preferredDate, appt.preferredTime].filter(Boolean).join(' '),
         doctorId: appt.doctorId,
+        patientCode: manualPatientCode,
       });
       await sb.from('appointments').update({ resolved_patient_id: patient.id }).eq('id', appointmentId);
       appt.status = 'approved';
@@ -3665,6 +3670,7 @@ function renderReception(root) {
                     <p class="text-xs text-slate-500 mt-0.5">${a.phone} · Wants: <span class="font-medium text-slate-700 dark:text-slate-300">${doc ? escapeHtml(doc.name) : 'Any doctor'}</span></p>
                     <p class="text-xs text-slate-500">${a.preferredDate ? formatDate(a.preferredDate) : ''} ${a.preferredTime ? '· ' + escapeHtml(a.preferredTime) : ''}</p>
                     ${a.notes ? `<p class="text-[11px] text-slate-400 mt-0.5">${escapeHtml(a.notes)}</p>` : ''}
+                    <input id="appt-code-${a.id}" placeholder="Patient ID (optional)" class="mt-2 w-full sm:w-48 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent text-xs outline-none focus:ring-2 focus:ring-amber-500 transition" />
                   </div>
                   <div class="flex gap-2 shrink-0">
                     <button data-appt-action="approve" data-appt-id="${a.id}" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-700 transition">Accept</button>
@@ -3699,6 +3705,11 @@ function renderReception(root) {
                 <div>
                   <label class="text-xs font-medium text-slate-500 mb-1 block">Mobile Number</label>
                   <input name="phone" required type="tel" maxlength="10" inputmode="numeric" placeholder="10-digit mobile"
+                    class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent text-sm outline-none focus:ring-2 focus:ring-brand-500 transition" />
+                </div>
+                <div>
+                  <label class="text-xs font-medium text-slate-500 mb-1 block">Patient ID <span class="text-slate-400 font-normal">(optional — leave blank to auto-generate)</span></label>
+                  <input name="patientCode" placeholder="e.g. your hospital's existing ID"
                     class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent text-sm outline-none focus:ring-2 focus:ring-brand-500 transition" />
                 </div>
                 <div class="grid grid-cols-2 gap-3">
@@ -3848,7 +3859,8 @@ function renderReception(root) {
         if (m < 0 || (m === 0 && today.getDate() < d.getDate())) age--;
       }
       if (!name || !phone || !doctorId) return;
-      const p = store.registerWalkIn({ name, phone, isEmergency, notes, doctorId, registeredBy: session.name || '', age, gender });
+      const manualPatientCode = (fd.get('patientCode') || '').trim();
+      const p = store.registerWalkIn({ name, phone, isEmergency, notes, doctorId, registeredBy: session.name || '', age, gender, patientCode: manualPatientCode });
       notifications.toast('Token #' + p.token + ' issued', p.name + (isEmergency ? ' · Emergency priority' : ' · Added to queue'), 'success');
       e.target.reset();
       const hint = root.querySelector('#register-age-hint');
@@ -3895,7 +3907,8 @@ function renderReception(root) {
     }
     if (btn.dataset.apptAction === 'approve' && btn.dataset.apptId) {
       btn.disabled = true;
-      const res = await store.approveAppointment(btn.dataset.apptId);
+      const manualCode = (root.querySelector('#appt-code-' + btn.dataset.apptId)?.value || '').trim();
+      const res = await store.approveAppointment(btn.dataset.apptId, manualCode);
       if (res.ok) notifications.toast('Appointment accepted', 'Token #' + res.patient.token + ' issued to ' + res.patient.name, 'success');
       else if (res.alreadyHandled) notifications.toast('Already handled', 'Another staff member already actioned this request', 'info');
       else notifications.toast('Error', res.error, 'error');
@@ -4473,6 +4486,7 @@ function renderManager(root) {
                         <p class="text-xs text-slate-500 mt-0.5">${a.phone} · Wants: <span class="font-medium text-slate-700 dark:text-slate-300">${doc ? escapeHtml(doc.name) : 'Any doctor'}</span></p>
                         <p class="text-xs text-slate-500">${a.preferredDate ? formatDate(a.preferredDate) : ''} ${a.preferredTime ? '· ' + escapeHtml(a.preferredTime) : ''}</p>
                         ${a.notes ? `<p class="text-[11px] text-slate-400 mt-0.5">${escapeHtml(a.notes)}</p>` : ''}
+                        <input id="appt-code-${a.id}" placeholder="Patient ID (optional)" class="mt-2 w-full sm:w-48 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent text-xs outline-none focus:ring-2 focus:ring-amber-500 transition" />
                       </div>
                       <div class="flex gap-2 shrink-0">
                         <button data-appt-action="approve" data-appt-id="${a.id}" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-700 transition">Accept</button>
@@ -5160,7 +5174,8 @@ function renderManager(root) {
     }
     if (btn.dataset.apptAction === 'approve' && btn.dataset.apptId) {
       btn.disabled = true;
-      const res = await store.approveAppointment(btn.dataset.apptId);
+      const manualCode = (root.querySelector('#appt-code-' + btn.dataset.apptId)?.value || '').trim();
+      const res = await store.approveAppointment(btn.dataset.apptId, manualCode);
       if (res.ok) notifications.toast('Appointment accepted', 'Token #' + res.patient.token + ' issued to ' + res.patient.name, 'success');
       else if (res.alreadyHandled) notifications.toast('Already handled', 'Another staff member already actioned this request', 'info');
       else notifications.toast('Error', res.error, 'error');
