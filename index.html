@@ -5324,6 +5324,24 @@ function renderDoctor(root) {
     const current = store.getCurrentPatient(doctorId);
     const waiting = store.getWaitingPatients(doctorId);
 
+    // Only surface "Extend hours" / "Skip break" when actually relevant right
+    // now — not as permanent clutter on the screen.
+    const now = new Date();
+    const nowTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    const todaySchedule = getDoctorSchedule(doctor)[WEEKDAYS[now.getDay()]];
+    const addMins = (t, m) => {
+      const [h, mi] = t.split(':').map(Number);
+      const total = h * 60 + mi + m;
+      return `${String(Math.floor(total / 60) % 24).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+    };
+    const showExtend = !!(todaySchedule && todaySchedule.active &&
+      nowTime >= addMins(todaySchedule.end, -30) &&
+      nowTime <= addMins(doctor.extendedUntil || todaySchedule.end, 60));
+    const activeBreak = todaySchedule && !doctor.skipBreakToday
+      ? (todaySchedule.breaks || []).find(b => b.start && b.end && nowTime >= addMins(b.start, -15) && nowTime <= b.end)
+      : null;
+    const showSkipBreak = !!activeBreak || (doctor.skipBreakToday && todaySchedule && (todaySchedule.breaks || []).some(b => b.start && nowTime <= b.end));
+
     root.innerHTML = `
       ${headerBar({
         title: doctor.name,
@@ -5346,10 +5364,10 @@ function renderDoctor(root) {
           <div class="flex items-center gap-2 text-sm">
             <span class="px-3 py-1 rounded-full bg-slate-100 dark:bg-slate-800 font-medium">${snap.totalSeen} seen today</span>
             <span class="px-3 py-1 rounded-full bg-brand-50 dark:bg-brand-950 text-brand-700 dark:text-brand-300 font-medium">${snap.totalWaiting} waiting</span>
-            <button data-action="extend-hours" class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-violet-50 dark:bg-violet-950 text-violet-700 dark:text-violet-300 hover:bg-violet-100 dark:hover:bg-violet-900 transition" title="Extend today's hours by 30 minutes — doesn't change your permanent schedule">
+            <button data-action="extend-hours" class="${showExtend ? '' : 'hidden'} inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-violet-50 dark:bg-violet-950 text-violet-700 dark:text-violet-300 hover:bg-violet-100 dark:hover:bg-violet-900 transition" title="Extend today's hours by 30 minutes — doesn't change your permanent schedule">
               ${icon('clock', 13)} +30 min today${doctor.extendedUntil ? ` (until ${doctor.extendedUntil})` : ''}
             </button>
-            <button data-action="toggle-skip-break" class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold ${doctor.skipBreakToday ? 'bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300' : 'bg-orange-50 dark:bg-orange-950 text-orange-700 dark:text-orange-300'} transition" title="Skip today's scheduled break/rounds — doesn't change your permanent schedule">
+            <button data-action="toggle-skip-break" class="${showSkipBreak ? '' : 'hidden'} inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold ${doctor.skipBreakToday ? 'bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300' : 'bg-orange-50 dark:bg-orange-950 text-orange-700 dark:text-orange-300'} transition" title="Skip today's scheduled break/rounds — doesn't change your permanent schedule">
               ${icon(doctor.skipBreakToday ? 'check' : 'coffee', 13)} ${doctor.skipBreakToday ? 'Skipping break today' : 'Skip break today'}
             </button>
           </div>
