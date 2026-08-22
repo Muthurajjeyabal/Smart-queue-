@@ -936,6 +936,8 @@ function mapPatientRow(r) {
     doctorId: r.doctor_id,
     hospitalId: r.hospital_id,
     registeredBy: r.registered_by || '',
+    age: r.age !== undefined ? r.age : null,
+    gender: r.gender || '',
   };
 }
 
@@ -1460,6 +1462,8 @@ class Store {
         is_appointment: !!p.isAppointment,
         notes: p.notes,
         registered_by: p.registeredBy || null,
+        age: p.age !== undefined ? p.age : null,
+        gender: p.gender || null,
         created_at: p.createdAt,
       });
       if (error) throw error;
@@ -1554,7 +1558,7 @@ class Store {
   }
 
   // ---------- Patient registration & tokens ----------
-  registerWalkIn({ name, phone, isEmergency = false, notes = '', doctorId, isAppointment = false, registeredBy = '' }) {
+  registerWalkIn({ name, phone, isEmergency = false, notes = '', doctorId, isAppointment = false, registeredBy = '', age = null, gender = '' }) {
     const doc = this.getDoctor(doctorId);
     if (!doc) throw new Error('A doctor must be selected to register a patient');
     const cleanPhone = String(phone).replace(/\D/g, '').slice(-10);
@@ -1570,6 +1574,8 @@ class Store {
       isAppointment: !!isAppointment,
       notes,
       registeredBy,
+      age: age !== null && age !== '' ? Number(age) : null,
+      gender: gender || '',
       createdAt: new Date().toISOString(),
       consultStartedAt: null,
       consultEndedAt: null,
@@ -1984,7 +1990,7 @@ class Store {
 
       const { data, error } = await sb
         .from('patients')
-        .select('id, day, status, doctor_id, is_emergency, created_at, name, phone, token')
+        .select('id, day, status, doctor_id, is_emergency, created_at, name, phone, token, age, gender')
         .eq('hospital_id', this.state.hospitalId)
         .ilike(col, `%${term}%`)
         .order('created_at', { ascending: false })
@@ -2013,7 +2019,7 @@ class Store {
 
       const [{ data, error }, { data: feedbackRows, error: fbError }] = await Promise.all([
         sb.from('patients')
-          .select('id, day, status, doctor_id, is_emergency, created_at, name, phone, token')
+          .select('id, day, status, doctor_id, is_emergency, created_at, name, phone, token, age, gender')
           .eq('hospital_id', this.state.hospitalId)
           .gte('day', sinceStr)
           .lte('day', untilStr)
@@ -3683,6 +3689,23 @@ function renderReception(root) {
                   <input name="phone" required type="tel" maxlength="10" inputmode="numeric" placeholder="10-digit mobile"
                     class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent text-sm outline-none focus:ring-2 focus:ring-brand-500 transition" />
                 </div>
+                <div class="grid grid-cols-2 gap-3">
+                  <div>
+                    <label class="text-xs font-medium text-slate-500 mb-1 block">Date of Birth</label>
+                    <input id="register-dob" name="dob" type="date" max="${todayKey()}"
+                      class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent text-sm outline-none focus:ring-2 focus:ring-brand-500 transition" />
+                    <p id="register-age-hint" class="text-[11px] text-slate-400 mt-1"></p>
+                  </div>
+                  <div>
+                    <label class="text-xs font-medium text-slate-500 mb-1 block">Gender</label>
+                    <select name="gender" class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent text-sm outline-none focus:ring-2 focus:ring-brand-500 transition">
+                      <option value="">Select</option>
+                      <option value="Male">Male</option>
+                      <option value="Female">Female</option>
+                      <option value="Other">Other</option>
+                    </select>
+                  </div>
+                </div>
                 <div>
                   <label class="text-xs font-medium text-slate-500 mb-1 block">Notes (optional)</label>
                   <input name="notes" placeholder="Preferred time / remarks"
@@ -3746,7 +3769,7 @@ function renderReception(root) {
                         </div>
                         <div class="flex-1 min-w-0">
                           <div class="flex items-center gap-2 flex-wrap">
-                            <p class="font-semibold text-sm">${p.name}</p>
+                            <p class="font-semibold text-sm">${p.name}${p.age || p.gender ? `<span class="text-slate-400 font-normal"> · ${[p.age, p.gender ? p.gender.charAt(0) : ''].filter(Boolean).join(', ')}</span>` : ''}</p>
                             ${p.isEmergency ? '<span class="text-[10px] font-bold uppercase text-rose-600 bg-rose-100 dark:bg-rose-900/50 px-1.5 py-0.5 rounded">Emergency</span>' : ''}
                             ${statusBadge(p.status)}
                           </div>
@@ -3781,6 +3804,18 @@ function renderReception(root) {
       });
     }
 
+    root.querySelector('#register-dob')?.addEventListener('change', (e) => {
+      const hint = root.querySelector('#register-age-hint');
+      if (!hint) return;
+      if (!e.target.value) { hint.textContent = ''; return; }
+      const dob = new Date(e.target.value + 'T00:00:00');
+      const today = new Date();
+      let age = today.getFullYear() - dob.getFullYear();
+      const m = today.getMonth() - dob.getMonth();
+      if (m < 0 || (m === 0 && today.getDate() < dob.getDate())) age--;
+      hint.textContent = age >= 0 ? `Age: ${age}` : '';
+    });
+
     root.querySelector('#register-form')?.addEventListener('submit', (e) => {
       e.preventDefault();
       const fd = new FormData(e.target);
@@ -3789,10 +3824,22 @@ function renderReception(root) {
       const notes = fd.get('notes') || '';
       const isEmergency = fd.get('emergency') === 'on';
       const doctorId = fd.get('doctorId');
+      const gender = fd.get('gender') || '';
+      const dob = fd.get('dob') || '';
+      let age = null;
+      if (dob) {
+        const d = new Date(dob + 'T00:00:00');
+        const today = new Date();
+        age = today.getFullYear() - d.getFullYear();
+        const m = today.getMonth() - d.getMonth();
+        if (m < 0 || (m === 0 && today.getDate() < d.getDate())) age--;
+      }
       if (!name || !phone || !doctorId) return;
-      const p = store.registerWalkIn({ name, phone, isEmergency, notes, doctorId, registeredBy: session.name || '' });
+      const p = store.registerWalkIn({ name, phone, isEmergency, notes, doctorId, registeredBy: session.name || '', age, gender });
       notifications.toast('Token #' + p.token + ' issued', p.name + (isEmergency ? ' · Emergency priority' : ' · Added to queue'), 'success');
       e.target.reset();
+      const hint = root.querySelector('#register-age-hint');
+      if (hint) hint.textContent = '';
       const card = root.querySelector('.register-card');
       if (card) {
         card.classList.remove('just-issued');
@@ -4833,7 +4880,7 @@ function renderManager(root) {
 
     root.querySelector('[data-action="export-csv"]')?.addEventListener('click', () => {
       if (!reportData || !reportData.ok) return;
-      const headers = ['Date', 'Token', 'Patient Name', 'Phone', 'Doctor', 'Status', 'Emergency'];
+      const headers = ['Date', 'Token', 'Patient Name', 'Age', 'Gender', 'Phone', 'Doctor', 'Status', 'Emergency'];
       const lines = [headers.join(',')];
       reportData.rawRows.forEach(r => {
         const doc = store.getDoctor(r.doctor_id);
@@ -4841,6 +4888,8 @@ function renderManager(root) {
           r.day,
           r.token,
           `"${(r.name || '').replace(/"/g, '""')}"`,
+          r.age || '',
+          r.gender || '',
           r.phone,
           `"${(doc ? doc.name : 'Unknown').replace(/"/g, '""')}"`,
           r.status,
@@ -5500,7 +5549,7 @@ function renderDoctor(root) {
             <div class="flex items-start justify-between gap-4">
               <div>
                 <p class="text-xs font-medium uppercase tracking-wider text-teal-700 dark:text-teal-300 mb-1">Now Consulting</p>
-                <p class="font-display text-2xl font-bold">#${current.token} · ${current.name}</p>
+                <p class="font-display text-2xl font-bold">#${current.token} · ${current.name}${current.age || current.gender ? `<span class="text-slate-400 font-normal text-lg"> (${[current.age, current.gender].filter(Boolean).join(', ')})</span>` : ''}</p>
                 <p class="text-sm text-slate-500 mt-1">${current.phone} · Started ${formatTime(current.consultStartedAt)}</p>
               </div>
               <button data-status="completed" data-id="${current.id}" class="shrink-0 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold transition">
