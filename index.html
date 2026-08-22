@@ -3301,7 +3301,10 @@ let reception_unsub = null;
 function renderReception(root) {
   const session = store.getState().sessions.reception;
   if (!session || !store.getState().hospitalId) {
-    window.location.hash = '#/';
+    // Session lost (e.g. page refresh) — go straight back to the Reception
+    // PIN gate instead of the generic 4-card screen.
+    if (store.getState().hospitalId) { PENDING_ROLE = 'reception'; window.location.hash = '#/?role=reception'; }
+    else window.location.hash = '#/';
     return;
   }
 
@@ -3762,7 +3765,8 @@ let manager_unsub = null;
 function renderManager(root) {
   const session = store.getState().sessions.manager;
   if (!session || !store.getState().hospitalId) {
-    window.location.hash = '#/';
+    if (store.getState().hospitalId) { PENDING_ROLE = 'manager'; window.location.hash = '#/?role=manager'; }
+    else window.location.hash = '#/';
     return;
   }
 
@@ -4833,7 +4837,8 @@ function renderAdmin(root) {
 function renderDoctor(root) {
   const session = store.getState().sessions.doctor;
   if (!session || !store.getState().hospitalId) {
-    window.location.hash = '#/';
+    if (store.getState().hospitalId) { PENDING_ROLE = 'doctor'; window.location.hash = '#/?role=doctor'; }
+    else window.location.hash = '#/';
     return;
   }
   const doctorId = session.doctorId;
