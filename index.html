@@ -938,6 +938,7 @@ function mapPatientRow(r) {
     registeredBy: r.registered_by || '',
     age: r.age !== undefined ? r.age : null,
     gender: r.gender || '',
+    patientCode: r.patient_code || null,
   };
 }
 
@@ -1449,6 +1450,16 @@ class Store {
   // ---------- Background sync helpers (fire-and-forget) ----------
   async _pushPatientInsert(p, attempt = 1) {
     try {
+      if (!p.patientCode) {
+        const { data: code } = await sb.rpc('get_or_create_patient_code', {
+          p_hospital_id: this.state.hospitalId,
+          p_phone: p.phone,
+        });
+        if (code) {
+          p.patientCode = code;
+          this.notify();
+        }
+      }
       const { error } = await sb.from('patients').insert({
         id: p.id,
         hospital_id: this.state.hospitalId,
@@ -1464,6 +1475,7 @@ class Store {
         registered_by: p.registeredBy || null,
         age: p.age !== undefined ? p.age : null,
         gender: p.gender || null,
+        patient_code: p.patientCode || null,
         created_at: p.createdAt,
       });
       if (error) throw error;
@@ -1990,7 +2002,7 @@ class Store {
 
       const { data, error } = await sb
         .from('patients')
-        .select('id, day, status, doctor_id, is_emergency, created_at, name, phone, token, age, gender')
+        .select('id, day, status, doctor_id, is_emergency, created_at, name, phone, token, age, gender, patient_code')
         .eq('hospital_id', this.state.hospitalId)
         .ilike(col, `%${term}%`)
         .order('created_at', { ascending: false })
@@ -2019,7 +2031,7 @@ class Store {
 
       const [{ data, error }, { data: feedbackRows, error: fbError }] = await Promise.all([
         sb.from('patients')
-          .select('id, day, status, doctor_id, is_emergency, created_at, name, phone, token, age, gender')
+          .select('id, day, status, doctor_id, is_emergency, created_at, name, phone, token, age, gender, patient_code')
           .eq('hospital_id', this.state.hospitalId)
           .gte('day', sinceStr)
           .lte('day', untilStr)
@@ -3770,6 +3782,7 @@ function renderReception(root) {
                         <div class="flex-1 min-w-0">
                           <div class="flex items-center gap-2 flex-wrap">
                             <p class="font-semibold text-sm">${p.name}${p.age || p.gender ? `<span class="text-slate-400 font-normal"> · ${[p.age, p.gender ? p.gender.charAt(0) : ''].filter(Boolean).join(', ')}</span>` : ''}</p>
+                            ${p.patientCode ? `<span class="text-[10px] font-mono font-semibold text-slate-400 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded">${p.patientCode}</span>` : ''}
                             ${p.isEmergency ? '<span class="text-[10px] font-bold uppercase text-rose-600 bg-rose-100 dark:bg-rose-900/50 px-1.5 py-0.5 rounded">Emergency</span>' : ''}
                             ${statusBadge(p.status)}
                           </div>
@@ -4636,7 +4649,7 @@ function renderManager(root) {
                             #${r.token}
                           </div>
                           <div class="flex-1 min-w-0">
-                            <p class="text-sm font-semibold truncate">${escapeHtml(r.name || '')}</p>
+                            <p class="text-sm font-semibold truncate">${escapeHtml(r.name || '')} ${(r.patient_code || r.patientCode) ? `<span class="text-[10px] font-mono font-semibold text-slate-400 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded">${r.patient_code || r.patientCode}</span>` : ''}</p>
                             <p class="text-xs text-slate-500">${r.phone} · ${formatDate(r.day)} · ${doc ? escapeHtml(doc.name) : 'Unknown doctor'}</p>
                           </div>
                           ${statusBadge(r.status)}
@@ -4880,11 +4893,12 @@ function renderManager(root) {
 
     root.querySelector('[data-action="export-csv"]')?.addEventListener('click', () => {
       if (!reportData || !reportData.ok) return;
-      const headers = ['Date', 'Token', 'Patient Name', 'Age', 'Gender', 'Phone', 'Doctor', 'Status', 'Emergency'];
+      const headers = ['Patient ID', 'Date', 'Token', 'Patient Name', 'Age', 'Gender', 'Phone', 'Doctor', 'Status', 'Emergency'];
       const lines = [headers.join(',')];
       reportData.rawRows.forEach(r => {
         const doc = store.getDoctor(r.doctor_id);
         const row = [
+          r.patient_code || '',
           r.day,
           r.token,
           `"${(r.name || '').replace(/"/g, '""')}"`,
@@ -5548,7 +5562,7 @@ function renderDoctor(root) {
           <div class="now-consulting-card rounded-2xl border-2 border-teal-500/30 bg-teal-50/50 dark:bg-teal-950/20 p-5">
             <div class="flex items-start justify-between gap-4">
               <div>
-                <p class="text-xs font-medium uppercase tracking-wider text-teal-700 dark:text-teal-300 mb-1">Now Consulting</p>
+                <p class="text-xs font-medium uppercase tracking-wider text-teal-700 dark:text-teal-300 mb-1">Now Consulting${current.patientCode ? ` · <span class="font-mono">${current.patientCode}</span>` : ''}</p>
                 <p class="font-display text-2xl font-bold">#${current.token} · ${current.name}${current.age || current.gender ? `<span class="text-slate-400 font-normal text-lg"> (${[current.age, current.gender].filter(Boolean).join(', ')})</span>` : ''}</p>
                 <p class="text-sm text-slate-500 mt-1">${current.phone} · Started ${formatTime(current.consultStartedAt)}</p>
               </div>
