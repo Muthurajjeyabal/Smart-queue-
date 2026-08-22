@@ -2945,7 +2945,8 @@ let patient_countdownTimer = null;
 function renderPatient(root) {
   const session = store.getState().sessions.patient;
   if (!session || !store.getState().hospitalId) {
-    window.location.hash = '#/';
+    if (store.getState().hospitalId) { PENDING_ROLE = 'patient'; window.location.hash = '#/?role=patient'; }
+    else window.location.hash = '#/';
     return;
   }
 
