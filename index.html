@@ -3309,6 +3309,8 @@ function renderReception(root) {
     return;
   }
 
+  let queueFilterDoctorId = ''; // '' = All doctors
+
   const paint = () => {
     const state = store.getState();
     const overview = queueEngine.getOverview();
@@ -3316,9 +3318,10 @@ function renderReception(root) {
     const searchQ = (document.getElementById('search-input') || {}).value || '';
     const selectedDoctorId = (document.getElementById('register-doctor') || {}).value || state.doctors[0]?.id || '';
 
-    const filtered = searchQ
+    const filtered = (searchQ
       ? store.searchPatients(searchQ)
-      : store.getState().patients.filter(p => p.day === state.day).sort((a, b) => b.token - a.token);
+      : store.getState().patients.filter(p => p.day === state.day).sort((a, b) => b.token - a.token)
+    ).filter(p => !queueFilterDoctorId || p.doctorId === queueFilterDoctorId);
 
     root.innerHTML = `
       ${headerBar({
@@ -3434,6 +3437,19 @@ function renderReception(root) {
                 </div>
               </div>
 
+              ${state.doctors.filter(d => d.active !== false).length > 1 ? `
+                <div class="px-4 py-2.5 border-b border-slate-100 dark:border-slate-800 flex gap-2 overflow-x-auto">
+                  <button data-queue-filter="" class="shrink-0 px-3 py-1.5 rounded-full text-xs font-medium transition ${!queueFilterDoctorId ? 'bg-brand-600 text-white' : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'}">
+                    All Doctors
+                  </button>
+                  ${state.doctors.filter(d => d.active !== false).map(d => `
+                    <button data-queue-filter="${d.id}" class="shrink-0 px-3 py-1.5 rounded-full text-xs font-medium transition ${queueFilterDoctorId === d.id ? 'bg-brand-600 text-white' : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'}">
+                      ${escapeHtml(d.name)}
+                    </button>
+                  `).join('')}
+                </div>
+              ` : ''}
+
               <div class="max-h-[28rem] overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800/80" id="queue-list">
                 ${filtered.length === 0 ? `
                   <div class="p-10 text-center text-sm text-slate-400">No patients found. Register one or load demo data.</div>
@@ -3506,6 +3522,12 @@ function renderReception(root) {
   });
 
   root.addEventListener('click', async (e) => {
+    const filterBtn = e.target.closest('[data-queue-filter]');
+    if (filterBtn) {
+      queueFilterDoctorId = filterBtn.dataset.queueFilter;
+      paint();
+      return;
+    }
     const btn = e.target.closest('[data-action], [data-status], [data-appt-action]');
     if (!btn) return;
     if (btn.dataset.action === 'logout') {
