@@ -446,6 +446,79 @@ aside [data-tab]:active, #mobile-nav-drawer [data-tab]:active { transform: scale
 }
 .shadow-glow { animation: hero-glow 3.5s ease-in-out infinite; }
 
+/* ============================================================
+   Doctor & Reception screen — premium polish
+   ============================================================ */
+
+/* "Now Consulting" card — subtle breathing glow + gradient edge,
+   makes the live/active state feel alive */
+.now-consulting-card {
+  position: relative;
+  animation: consult-breathe 2.8s ease-in-out infinite;
+}
+@keyframes consult-breathe {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(20,184,166,0.12), 0 8px 24px -8px rgba(20,184,166,0.15); }
+  50% { box-shadow: 0 0 0 6px rgba(20,184,166,0.06), 0 12px 32px -8px rgba(20,184,166,0.22); }
+}
+
+/* Consultation control buttons — icon lifts and settles on hover/press,
+   satisfying tactile feel instead of a flat click */
+.control-btn { position: relative; overflow: hidden; }
+.control-icon { transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1); }
+.control-btn:hover:not(:disabled) .control-icon { transform: translateY(-2px) scale(1.08); }
+.control-btn:active:not(:disabled) .control-icon { transform: scale(0.92); }
+.control-btn::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at 50% 0%, rgba(255,255,255,0.25), transparent 70%);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  pointer-events: none;
+}
+.control-btn:hover:not(:disabled)::after { opacity: 1; }
+
+/* Register Patient card — gentle highlight ring pulse right after a token
+   is issued, drawing the eye back to "ready for the next patient" */
+@keyframes register-ready {
+  0% { box-shadow: 0 0 0 0 rgba(13,148,136,0.25); }
+  70% { box-shadow: 0 0 0 8px rgba(13,148,136,0); }
+  100% { box-shadow: 0 0 0 0 rgba(13,148,136,0); }
+}
+.register-card.just-issued { animation: register-ready 1s cubic-bezier(0.16, 1, 0.3, 1); }
+
+/* Issue Digital Token button — satisfying press with a light sweep */
+.issue-token-btn { position: relative; overflow: hidden; }
+.issue-token-btn::before {
+  content: '';
+  position: absolute;
+  top: 0; left: -60%;
+  width: 40%; height: 100%;
+  background: linear-gradient(120deg, transparent, rgba(255,255,255,0.35), transparent);
+  transform: skewX(-20deg);
+  transition: left 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.issue-token-btn:hover::before { left: 130%; }
+
+/* Doctor waiting-queue rows — subtle highlight sweep on hover */
+#queue-list > div, .divide-y > div {
+  transition: background-color 0.25s ease;
+}
+
+/* Metric card icons/numbers — gentle entrance pop */
+main .rounded-2xl .font-display.text-2xl,
+main .rounded-2xl .font-display.text-3xl {
+  animation: number-pop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+@keyframes number-pop {
+  from { opacity: 0; transform: scale(0.85) translateY(4px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+/* Doctor filter chips (Reception) — smooth active-state morph */
+[data-queue-filter] { transition: background-color 0.3s cubic-bezier(0.16, 1, 0.3, 1), color 0.3s ease, transform 0.15s ease; }
+[data-queue-filter]:active { transform: scale(0.95); }
+
 /* Print / accessibility */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
@@ -3588,7 +3661,7 @@ function renderReception(root) {
 
         <div class="grid lg:grid-cols-5 gap-6">
           <div class="lg:col-span-2 space-y-4">
-            <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card p-5">
+            <div class="register-card rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card p-5">
               <h2 class="font-display font-bold text-base mb-4 flex items-center gap-2">
                 ${icon('user-plus', 18, 'text-brand-600')} Register Patient
               </h2>
@@ -3619,7 +3692,7 @@ function renderReception(root) {
                   <input type="checkbox" name="emergency" class="w-4 h-4 rounded border-slate-300 text-rose-600 focus:ring-rose-500" />
                   <span class="text-sm font-medium text-rose-600 dark:text-rose-400">Emergency priority</span>
                 </label>
-                <button type="submit" ${!state.doctors.length ? 'disabled' : ''} class="w-full py-3 rounded-xl bg-brand-600 hover:bg-brand-700 disabled:opacity-40 text-white font-semibold text-sm shadow-soft transition active:scale-[0.98] flex items-center justify-center gap-2">
+                <button type="submit" ${!state.doctors.length ? 'disabled' : ''} class="issue-token-btn w-full py-3 rounded-xl bg-brand-600 hover:bg-brand-700 disabled:opacity-40 text-white font-semibold text-sm shadow-soft transition active:scale-[0.98] flex items-center justify-center gap-2">
                   ${icon('ticket', 18)} Issue Digital Token
                 </button>
                 ${!state.doctors.length ? `<p class="text-xs text-rose-500 text-center">No doctors set up yet. Ask your Manager to add one.</p>` : ''}
@@ -3720,6 +3793,12 @@ function renderReception(root) {
       const p = store.registerWalkIn({ name, phone, isEmergency, notes, doctorId, registeredBy: session.name || '' });
       notifications.toast('Token #' + p.token + ' issued', p.name + (isEmergency ? ' · Emergency priority' : ' · Added to queue'), 'success');
       e.target.reset();
+      const card = root.querySelector('.register-card');
+      if (card) {
+        card.classList.remove('just-issued');
+        void card.offsetWidth; // restart animation
+        card.classList.add('just-issued');
+      }
     });
   };
 
@@ -5383,28 +5462,28 @@ function renderDoctor(root) {
         <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card p-5">
           <h2 class="font-display font-bold text-sm uppercase tracking-wider text-slate-500 mb-4">Consultation Controls</h2>
           <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
-            <button data-action="start" class="flex flex-col items-center gap-2 p-4 rounded-xl bg-teal-600 hover:bg-teal-700 text-white transition active:scale-95 disabled:opacity-40 disabled:pointer-events-none" ${doctor.status === 'finished' || doctor.status === 'consulting' ? 'disabled' : ''}>
-              ${icon('play', 22)}
+            <button data-action="start" class="control-btn flex flex-col items-center gap-2 p-4 rounded-xl bg-teal-600 hover:bg-teal-700 text-white transition active:scale-95 disabled:opacity-40 disabled:pointer-events-none" ${doctor.status === 'finished' || doctor.status === 'consulting' ? 'disabled' : ''}>
+              <span class="control-icon">${icon('play', 22)}</span>
               <span class="text-xs font-semibold">Start</span>
             </button>
-            <button data-action="next" class="flex flex-col items-center gap-2 p-4 rounded-xl bg-brand-600 hover:bg-brand-700 text-white transition active:scale-95 disabled:opacity-40 disabled:pointer-events-none" ${doctor.status === 'finished' ? 'disabled' : ''}>
-              ${icon('skip-forward', 22)}
+            <button data-action="next" class="control-btn flex flex-col items-center gap-2 p-4 rounded-xl bg-brand-600 hover:bg-brand-700 text-white transition active:scale-95 disabled:opacity-40 disabled:pointer-events-none" ${doctor.status === 'finished' ? 'disabled' : ''}>
+              <span class="control-icon">${icon('skip-forward', 22)}</span>
               <span class="text-xs font-semibold">Next Patient</span>
             </button>
-            <button data-action="pause" class="flex flex-col items-center gap-2 p-4 rounded-xl bg-amber-500 hover:bg-amber-600 text-white transition active:scale-95 disabled:opacity-40 disabled:pointer-events-none" ${['paused','break','emergency_pause','finished'].includes(doctor.status) ? 'disabled' : ''}>
-              ${icon('pause', 22)}
+            <button data-action="pause" class="control-btn flex flex-col items-center gap-2 p-4 rounded-xl bg-amber-500 hover:bg-amber-600 text-white transition active:scale-95 disabled:opacity-40 disabled:pointer-events-none" ${['paused','break','emergency_pause','finished'].includes(doctor.status) ? 'disabled' : ''}>
+              <span class="control-icon">${icon('pause', 22)}</span>
               <span class="text-xs font-semibold">Pause</span>
             </button>
-            <button data-action="break" class="flex flex-col items-center gap-2 p-4 rounded-xl bg-orange-500 hover:bg-orange-600 text-white transition active:scale-95 disabled:opacity-40 disabled:pointer-events-none" ${['break','finished'].includes(doctor.status) ? 'disabled' : ''}>
-              ${icon('coffee', 22)}
+            <button data-action="break" class="control-btn flex flex-col items-center gap-2 p-4 rounded-xl bg-orange-500 hover:bg-orange-600 text-white transition active:scale-95 disabled:opacity-40 disabled:pointer-events-none" ${['break','finished'].includes(doctor.status) ? 'disabled' : ''}>
+              <span class="control-icon">${icon('coffee', 22)}</span>
               <span class="text-xs font-semibold">Lunch Break</span>
             </button>
-            <button data-action="emergency" class="flex flex-col items-center gap-2 p-4 rounded-xl bg-rose-600 hover:bg-rose-700 text-white transition active:scale-95 disabled:opacity-40 disabled:pointer-events-none" ${doctor.status === 'finished' ? 'disabled' : ''}>
-              ${icon('alert-triangle', 22)}
+            <button data-action="emergency" class="control-btn flex flex-col items-center gap-2 p-4 rounded-xl bg-rose-600 hover:bg-rose-700 text-white transition active:scale-95 disabled:opacity-40 disabled:pointer-events-none" ${doctor.status === 'finished' ? 'disabled' : ''}>
+              <span class="control-icon">${icon('alert-triangle', 22)}</span>
               <span class="text-xs font-semibold">Emergency</span>
             </button>
-            <button data-action="resume" class="flex flex-col items-center gap-2 p-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white transition active:scale-95 disabled:opacity-40 disabled:pointer-events-none" ${!['paused','break','emergency_pause'].includes(doctor.status) ? 'disabled' : ''}>
-              ${icon('play-circle', 22)}
+            <button data-action="resume" class="control-btn flex flex-col items-center gap-2 p-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white transition active:scale-95 disabled:opacity-40 disabled:pointer-events-none" ${!['paused','break','emergency_pause'].includes(doctor.status) ? 'disabled' : ''}>
+              <span class="control-icon">${icon('play-circle', 22)}</span>
               <span class="text-xs font-semibold">Resume</span>
             </button>
           </div>
@@ -5417,7 +5496,7 @@ function renderDoctor(root) {
 
         <!-- Current patient detail -->
         ${current ? `
-          <div class="rounded-2xl border-2 border-teal-500/30 bg-teal-50/50 dark:bg-teal-950/20 p-5">
+          <div class="now-consulting-card rounded-2xl border-2 border-teal-500/30 bg-teal-50/50 dark:bg-teal-950/20 p-5">
             <div class="flex items-start justify-between gap-4">
               <div>
                 <p class="text-xs font-medium uppercase tracking-wider text-teal-700 dark:text-teal-300 mb-1">Now Consulting</p>
