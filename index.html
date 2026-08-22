@@ -2397,6 +2397,9 @@ function doctorStatusBadge(status) {
     break: { label: 'On Break', cls: 'bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-200', dot: 'bg-orange-500' },
     emergency_pause: { label: 'Emergency', cls: 'bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-200', dot: 'bg-rose-500' },
     finished: { label: 'Finished', cls: 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300', dot: 'bg-slate-400' },
+    off_duty: { label: 'Off Duty', cls: 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400', dot: 'bg-slate-400' },
+    on_rounds: { label: 'On Rounds', cls: 'bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-200', dot: 'bg-orange-500' },
+    not_started: { label: 'Starts ' , cls: 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400', dot: 'bg-slate-400' },
   };
   const s = map[status] || map.available;
   return `
@@ -2404,6 +2407,32 @@ function doctorStatusBadge(status) {
       <span class="w-1.5 h-1.5 rounded-full ${s.dot} live-dot"></span>
       ${s.label}
     </span>`;
+}
+
+// Combines a doctor's manual queue status with their working schedule —
+// so the dashboard shows "Off Duty" / "Starts 09:00" / "On Rounds" outside
+// their actual working hours, instead of a stale "Available" forever.
+function doctorAvailabilityBadge(doctor) {
+  const now = new Date();
+  const day = WEEKDAYS[now.getDay()];
+  const schedule = getDoctorSchedule(doctor);
+  const daySchedule = schedule[day];
+  const nowTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+
+  if (!daySchedule || !daySchedule.active) {
+    return doctorStatusBadge('off_duty');
+  }
+  if (nowTime < daySchedule.start) {
+    return `<span class="badge bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400"><span class="w-1.5 h-1.5 rounded-full bg-slate-400 live-dot"></span>Starts ${daySchedule.start}</span>`;
+  }
+  if (nowTime > daySchedule.end) {
+    return doctorStatusBadge('off_duty');
+  }
+  const breaks = (daySchedule.breaks || []).filter(b => b.start && b.end);
+  if (breaks.some(b => nowTime >= b.start && nowTime <= b.end)) {
+    return doctorStatusBadge('on_rounds');
+  }
+  return doctorStatusBadge(doctor.status);
 }
 
 // Translated versions for the patient app (English elsewhere stays as-is)
@@ -4073,7 +4102,7 @@ function renderManager(root) {
                       <p class="text-sm font-semibold truncate">${escapeHtml(d.name)}</p>
                       <p class="text-xs text-slate-500">${current ? `Token #${current.token}` : `${dSnap.totalWaiting} waiting`}</p>
                     </div>
-                    ${doctorStatusBadge(d.status)}
+                    ${doctorAvailabilityBadge(d)}
                   </div>
                 `;
               }).join('')}
@@ -4108,7 +4137,7 @@ function renderManager(root) {
                         <p class="text-sm font-semibold truncate">${escapeHtml(d.name)}</p>
                         <p class="text-[11px] text-slate-500 truncate">${escapeHtml(d.specialty)} · ${dSnap.totalWaiting} waiting · ${dSnap.totalSeen} seen today</p>
                       </div>
-                      ${doctorStatusBadge(d.status)}
+                      ${doctorAvailabilityBadge(d)}
                     </div>
                     <div class="mt-2.5">
                       <label class="text-[10px] text-slate-400 block mb-1">Appointment requests go to</label>
