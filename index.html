@@ -548,6 +548,9 @@ main .rounded-2xl .font-display.text-3xl {
     <p id="splash-err"></p>
     <button id="continue-btn" type="button" onclick="typeof hideSplash==='function'&&hideSplash()">Continue</button>
   </div>
+  <div id="offline-banner" hidden style="display:none;position:fixed;top:0;left:0;right:0;z-index:200;background:#0A4A3D;color:#C8FFEA;font-size:13px;font-weight:600;text-align:center;padding:10px 16px;padding-top:calc(10px + env(safe-area-inset-top, 0px));">
+    Live updates paused — this device is offline. Tokens already on screen stay; new changes wait until the network returns.
+  </div>
   <div id="toast-container" class="fixed top-16 right-4 z-[100] flex flex-col gap-2 max-w-sm w-full pointer-events-none" style="top: calc(4rem + var(--safe-top, 0px));"></div>
   <script>
 /**
@@ -2898,8 +2901,9 @@ function renderLogin(root) {
             </div>
           </div>
 
-          <p class="text-center text-[11px] text-slate-400 mt-8">
+          <p class="text-center text-[11px] text-slate-400 mt-8 space-y-1">
             ${hasHospital ? `<button data-action="change-hospital" class="underline hover:text-slate-600">Change hospital</button>` : 'Smart Queue'}
+            <span class="block mt-2">Support · <a href="mailto:hello@smarthospitalqueue.com" class="underline hover:text-brand-700">hello@smarthospitalqueue.com</a> · <a href="https://wa.me/919597899960" target="_blank" rel="noopener" class="underline hover:text-brand-700">WhatsApp</a></span>
           </p>
         </div>
       </div>
@@ -4648,9 +4652,14 @@ function renderManager(root) {
                   <input id="report-search" type="search" value="${escapeHtml(reportSearch)}" placeholder="Search name or mobile — all time…"
                     class="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm outline-none focus:ring-2 focus:ring-rose-500 transition" />
                 </div>
-                <button data-action="export-csv" class="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-rose-400 transition shrink-0">
-                  ${icon('download', 13)} Export CSV
-                </button>
+                <div class="flex gap-2 shrink-0">
+                  <button data-action="export-csv" class="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-brand-400 transition">
+                    ${icon('download', 13)} Export CSV
+                  </button>
+                  <button data-action="export-pdf" class="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium bg-brand-600 hover:bg-brand-700 text-white transition">
+                    ${icon('file-text', 13)} Export PDF
+                  </button>
+                </div>
               </div>
 
               ${reportSearch.trim() ? `
@@ -4942,6 +4951,59 @@ function renderManager(root) {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
       notifications.toast('Exported', 'CSV file downloaded', 'success');
+    });
+
+    root.querySelector('[data-action="export-pdf"]')?.addEventListener('click', () => {
+      if (!reportData || !reportData.ok) return;
+      const hosp = store.getState().hospitalName || store.getState().hospitalCode || 'Hospital';
+      const range = reportData.range || {};
+      const tot = reportData.totals || {};
+      const doctorRows = (reportData.doctors || []).map(d => {
+        const doc = store.getDoctor(d.doctorId);
+        return `<tr><td>${escapeHtml(doc ? doc.name : 'Unknown')}</td><td>${d.total}</td><td>${d.completed}</td></tr>`;
+      }).join('');
+      const dayRows = (reportData.days || []).slice(0, 31).map(d =>
+        `<tr><td>${d.day}</td><td>${d.total}</td><td>${d.completed}</td><td>${d.noShow || 0}</td></tr>`
+      ).join('');
+      const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Smart Queue report</title>
+        <style>
+          body{font-family:Inter,system-ui,sans-serif;color:#0E2A2E;padding:32px;max-width:800px;margin:0 auto;}
+          h1{font-size:22px;margin:0 0 4px;}
+          .meta{color:#52706A;font-size:13px;margin-bottom:24px;}
+          .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:22px;}
+          .card{border:1px solid #D8E2DF;border-radius:10px;padding:12px;}
+          .card b{display:block;font-size:20px;color:#0F6E5C;}
+          .card span{font-size:11px;color:#52706A;}
+          table{width:100%;border-collapse:collapse;font-size:13px;margin:8px 0 22px;}
+          th,td{text-align:left;padding:8px;border-bottom:1px solid #D8E2DF;}
+          th{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#52706A;}
+          .foot{font-size:11px;color:#52706A;margin-top:28px;}
+          @media print { button{display:none;} }
+        </style></head><body>
+        <h1>${escapeHtml(hosp)} — OPD report</h1>
+        <p class="meta">Smart Queue · ${escapeHtml(range.from || '')} to ${escapeHtml(range.to || '')}</p>
+        <div class="grid">
+          <div class="card"><b>${tot.totalPatients || 0}</b><span>Patients</span></div>
+          <div class="card"><b>${tot.totalCompleted || 0}</b><span>Completed</span></div>
+          <div class="card"><b>${tot.totalNoShow || 0}</b><span>No-shows</span></div>
+          <div class="card"><b>${tot.totalEmergency || 0}</b><span>Emergency</span></div>
+        </div>
+        <h2 style="font-size:15px;">By doctor</h2>
+        <table><thead><tr><th>Doctor</th><th>Patients</th><th>Completed</th></tr></thead><tbody>${doctorRows || '<tr><td colspan="3">No data</td></tr>'}</tbody></table>
+        <h2 style="font-size:15px;">By day</h2>
+        <table><thead><tr><th>Date</th><th>Patients</th><th>Completed</th><th>No-show</th></tr></thead><tbody>${dayRows || '<tr><td colspan="4">No data</td></tr>'}</tbody></table>
+        <p class="foot">Generated by Smart Queue · hello@smarthospitalqueue.com · Print this page and choose Save as PDF.</p>
+        <button onclick="window.print()" style="margin-top:12px;padding:10px 16px;border:0;border-radius:8px;background:#0F6E5C;color:#fff;font-weight:600;">Print / Save PDF</button>
+        </body></html>`;
+      const w = window.open('', '_blank', 'noopener,noreferrer');
+      if (!w) {
+        notifications.toast('Popup blocked', 'Allow popups to export the PDF', 'warning');
+        return;
+      }
+      w.document.write(html);
+      w.document.close();
+      setTimeout(() => { try { w.print(); } catch (e) {} }, 400);
+      notifications.toast('Report ready', 'Use Print → Save as PDF', 'success');
     });
 
     root.querySelector('[data-action="toggle-add-doctor"]')?.addEventListener('click', () => {
@@ -5777,6 +5839,25 @@ document.addEventListener('click', (e) => {
 });
 
 // ---------- Boot ----------
+function initConnectivityBanner() {
+  const el = document.getElementById('offline-banner');
+  const sync = () => {
+    if (!el) return;
+    const offline = !navigator.onLine;
+    el.hidden = !offline;
+    el.style.display = offline ? 'block' : 'none';
+    document.body.style.paddingTop = offline ? '44px' : '';
+  };
+  window.addEventListener('online', () => {
+    sync();
+    if (window.notifications && notifications.toast) {
+      notifications.toast('Back online', 'Live queue updates have resumed', 'success');
+    }
+  });
+  window.addEventListener('offline', sync);
+  sync();
+}
+
 function hideSplash() {
   var splash = document.getElementById('splash');
   if (splash) {
@@ -5819,6 +5900,8 @@ async function boot() {
     var bar = document.getElementById('splash-bar');
     if (bar) bar.style.width = '60%';
     initTheme();
+
+    initConnectivityBanner();
 
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('sw.js').then((reg) => {
