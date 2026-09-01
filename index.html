@@ -885,6 +885,16 @@ function t(key) {
 /** @typedef {'waiting'|'consulting'|'completed'|'no_show'|'cancelled'} PatientStatus */
 /** @typedef {'available'|'consulting'|'paused'|'break'|'emergency_pause'|'finished'} DoctorStatus */
 
+
+const PLAN_LIMITS = {
+  clinic:     { label: 'Clinic',     doctors: 3,  reception: 1, reports: false },
+  polyclinic: { label: 'Polyclinic', doctors: 10, reception: 3, reports: true  },
+  hospital:   { label: 'Hospital',   doctors: 99, reception: 20, reports: true  },
+};
+function planLimits(plan) {
+  return PLAN_LIMITS[plan] || PLAN_LIMITS.clinic;
+}
+
 function createInitialState() {
   return {
     version: 1,
@@ -893,6 +903,7 @@ function createInitialState() {
     hospitalId: null,
     hospitalCode: null,
     hospitalName: null,
+    hospitalPlan: 'clinic',
     // Multiple doctors per hospital — each has its own queue, status, token counter
     doctors: [], // array of { id, name, specialty, avgConsultMin, active, status, currentPatientId, consultStartedAt, totalSeenToday, pauseReason, doctorStatusId, nextToken }
     receptionStaff: [], // array of { id, name, active }
@@ -992,11 +1003,18 @@ class Store {
     const clean = String(code).trim().toLowerCase();
     if (!clean) return { ok: false, error: 'Enter a hospital code' };
     try {
-      const { data: hospital, error } = await sb
+      let { data: hospital, error } = await sb
         .from('hospitals')
-        .select('id,name,code,address,phone,owner_id,created_at,logo_url')
+        .select('id,name,code,address,phone,owner_id,created_at,logo_url,plan')
         .eq('code', clean)
         .maybeSingle();
+      if (error && /plan/i.test(error.message || '')) {
+        ({ data: hospital, error } = await sb
+          .from('hospitals')
+          .select('id,name,code,address,phone,owner_id,created_at,logo_url')
+          .eq('code', clean)
+          .maybeSingle());
+      }
       if (error || !hospital) {
         const suggestions = await this.suggestHospitalCodes(clean);
         return { ok: false, error: 'Hospital code not found', suggestions };
@@ -1040,11 +1058,18 @@ class Store {
 
   async initHospitalById(id) {
     try {
-      const { data: hospital, error } = await sb
+      let { data: hospital, error } = await sb
         .from('hospitals')
-        .select('id,name,code,address,phone,owner_id,created_at,logo_url')
+        .select('id,name,code,address,phone,owner_id,created_at,logo_url,plan')
         .eq('id', id)
         .maybeSingle();
+      if (error && /plan/i.test(error.message || '')) {
+        ({ data: hospital, error } = await sb
+          .from('hospitals')
+          .select('id,name,code,address,phone,owner_id,created_at,logo_url')
+          .eq('id', id)
+          .maybeSingle());
+      }
       if (error || !hospital) return { ok: false, error: 'Hospital not found' };
       await this._loadHospital(hospital);
       return { ok: true, hospital };
@@ -1061,6 +1086,7 @@ class Store {
     this.state.hospitalPhone = hospital.phone || '';
     this.state.hospitalAddress = hospital.address || '';
     this.state.hospitalLogo = hospital.logo_url || '';
+    this.state.hospitalPlan = hospital.plan || 'clinic';
 
     const today = todayKey();
 
@@ -1180,6 +1206,11 @@ class Store {
 
   async addDoctor(name, specialty) {
     const today = todayKey();
+    const lim = planLimits(this.state.hospitalPlan);
+    const activeDocs = this.state.doctors.filter(d => d.active !== false).length;
+    if (activeDocs >= lim.doctors) {
+      return { ok: false, error: lim.label + ' plan allows ' + lim.doctors + ' doctors. WhatsApp hello@smarthospitalqueue.com to upgrade.' };
+    }
     try {
       const pin = generatePin();
       const { data: staffRow, error } = await sb.from('staff').insert({
@@ -1267,6 +1298,11 @@ class Store {
 
   // ---------- Reception staff (per-person tracking) ----------
   async addReceptionStaff(name) {
+    const lim = planLimits(this.state.hospitalPlan);
+    const activeRec = this.state.receptionStaff.filter(s => s.active !== false).length;
+    if (activeRec >= lim.reception) {
+      return { ok: false, error: lim.label + ' plan allows ' + lim.reception + ' reception login(s). WhatsApp to upgrade.' };
+    }
     try {
       const pin = generatePin();
       const { data: staffRow, error } = await sb.from('staff').insert({
@@ -4937,6 +4973,10 @@ function renderManager(root) {
     });
 
     root.querySelector('[data-action="export-csv"]')?.addEventListener('click', () => {
+      if (!planLimits(store.getState().hospitalPlan).reports) {
+        notifications.toast('Reports locked', 'Clinic plan has no CSV/PDF export. Upgrade via admin.', 'warning');
+        return;
+      }
       if (!reportData || !reportData.ok) return;
       const headers = ['Patient ID', 'Date', 'Token', 'Patient Name', 'Age', 'Gender', 'Phone', 'Doctor', 'Status', 'Emergency'];
       const lines = [headers.join(',')];
@@ -4970,6 +5010,10 @@ function renderManager(root) {
     });
 
     root.querySelector('[data-action="export-pdf"]')?.addEventListener('click', () => {
+      if (!planLimits(store.getState().hospitalPlan).reports) {
+        notifications.toast('Reports locked', 'Clinic plan has no CSV/PDF export. Upgrade via admin.', 'warning');
+        return;
+      }
       if (!reportData || !reportData.ok) return;
       const hosp = store.getState().hospitalName || store.getState().hospitalCode || 'Hospital';
       const range = reportData.range || {};
@@ -5462,6 +5506,12 @@ function renderAdmin(root) {
               <input id="ah-name" type="text" placeholder="Hospital name" class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent text-sm outline-none focus:ring-2 focus:ring-brand-500" />
               <input id="ah-address" type="text" placeholder="Address" class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent text-sm outline-none focus:ring-2 focus:ring-brand-500" />
               <input id="ah-phone" type="text" placeholder="Phone number" class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent text-sm outline-none focus:ring-2 focus:ring-brand-500" />
+              <label class="block text-xs font-medium text-slate-500">Plan</label>
+              <select id="ah-plan" class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent text-sm outline-none focus:ring-2 focus:ring-brand-500">
+                <option value="clinic">Clinic — 3 doctors, 1 reception, no PDF reports</option>
+                <option value="polyclinic">Polyclinic — 10 doctors, 3 reception, reports</option>
+                <option value="hospital">Hospital — 99 doctors, 20 reception, reports + priority support</option>
+              </select>
               <button id="ah-submit" class="w-full py-3 rounded-xl bg-brand-600 hover:bg-brand-700 text-white font-semibold text-sm shadow-soft transition active:scale-[0.98]">Create Hospital</button>
               <p id="ah-error" class="text-xs text-rose-500 hidden"></p>
             </div>
@@ -5507,7 +5557,8 @@ function renderAdmin(root) {
   async function loadList() {
     const listEl = root.querySelector('#ah-list');
     listEl.innerHTML = '<p class="text-xs text-slate-400">Loading…</p>';
-    const { data, error } = await sb.from('hospitals').select('id,name,code,address,phone,created_at').order('created_at', { ascending: false });
+    let { data, error } = await sb.from('hospitals').select('id,name,code,address,phone,created_at,plan').order('created_at', { ascending: false });
+    if (error) ({ data, error } = await sb.from('hospitals').select('id,name,code,address,phone,created_at').order('created_at', { ascending: false }));
     if (error || !data) {
       listEl.innerHTML = '<p class="text-xs text-rose-500">Could not load hospitals.</p>';
       return;
@@ -5521,8 +5572,23 @@ function renderAdmin(root) {
         <p class="font-semibold text-sm">${escapeHtml(h.name)}</p>
         <p class="text-xs text-slate-500 font-mono mt-0.5">${escapeHtml(h.code)}</p>
         <p class="text-[11px] text-slate-400 mt-1">${escapeHtml(h.address || '')}</p>
+        <select data-plan-hospital="${h.id}" class="mt-2 w-full px-2 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent text-xs">
+          <option value="clinic" ${(h.plan || 'clinic') === 'clinic' ? 'selected' : ''}>Clinic</option>
+          <option value="polyclinic" ${h.plan === 'polyclinic' ? 'selected' : ''}>Polyclinic</option>
+          <option value="hospital" ${h.plan === 'hospital' ? 'selected' : ''}>Hospital</option>
+        </select>
       </div>
     `).join('');
+    listEl.querySelectorAll('[data-plan-hospital]').forEach(sel => {
+      sel.addEventListener('change', async () => {
+        const { error } = await sb.from('hospitals').update({ plan: sel.value }).eq('id', sel.dataset.planHospital);
+        if (error) {
+          notifications.toast('Could not save plan', error.message + ' — add a plan column on hospitals in Supabase', 'error');
+        } else {
+          notifications.toast('Plan updated', sel.value, 'success');
+        }
+      });
+    });
   }
 
   loadList();
@@ -5545,10 +5611,20 @@ function renderAdmin(root) {
     btn.textContent = 'Creating…';
     const code = slugify(name);
     const managerPin = generatePin();
-    const { data, error } = await sb.from('hospitals')
-      .insert({ name, code, address, phone, manager_pin: managerPin })
-      .select('id,name,code,address,phone,created_at')
+    const plan = root.querySelector('#ah-plan')?.value || 'clinic';
+    let { data, error } = await sb.from('hospitals')
+      .insert({ name, code, address, phone, manager_pin: managerPin, plan })
+      .select('id,name,code,address,phone,created_at,plan')
       .single();
+    if (error && /plan/i.test(error.message || '')) {
+      ({ data, error } = await sb.from('hospitals')
+        .insert({ name, code, address, phone, manager_pin: managerPin })
+        .select('id,name,code,address,phone,created_at')
+        .single());
+      if (!error && data) {
+        notifications.toast('Hospital created', 'Plan was not saved. In Supabase run: alter table hospitals add column plan text default \'clinic\';', 'warning');
+      }
+    }
     btn.disabled = false;
     btn.textContent = 'Create Hospital';
 
