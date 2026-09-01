@@ -3,15 +3,15 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>Smart Hospital Queue</title>
+  <title>Smart Queue</title>
 
   <!-- PWA -->
   <link rel="manifest" href="manifest.json" />
-  <meta name="theme-color" content="#0d9488" />
+  <meta name="theme-color" content="#0F6E5C" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <meta name="apple-mobile-web-app-title" content="SHQ" />
+  <meta name="apple-mobile-web-app-title" content="Smart Queue" />
   <link rel="apple-touch-icon" href="apple-touch-icon.png" />
   <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
 
@@ -22,7 +22,7 @@
     #splash {
       position: fixed; inset: 0; z-index: 9999;
       display: flex; flex-direction: column; align-items: center; justify-content: center;
-      background: linear-gradient(145deg, #0d9488, #0f766e 55%, #134e4a);
+      background: linear-gradient(145deg, #128870, #0F6E5C 55%, #0A4A3D);
       color: #fff; transition: opacity 0.4s ease;
       animation: splashFade 2.4s ease-in forwards;
     }
@@ -58,7 +58,7 @@
         extend: {
           fontFamily: { sans: ['Inter','system-ui','sans-serif'], display: ['"Plus Jakarta Sans"','system-ui','sans-serif'] },
           colors: {
-            brand: { 50:'#f0fdfa',100:'#ccfbf1',200:'#99f6e4',300:'#5eead4',400:'#2dd4bf',500:'#14b8a6',600:'#0d9488',700:'#0f766e',800:'#115e59',900:'#134e4a',950:'#042f2e' }
+            brand: { 50:'#f0fdfa',100:'#ccfbf1',200:'#99f6e4',300:'#5eead4',400:'#2dd4bf',500:'#14b8a6',600:'#0F6E5C',700:'#0A4A3D',800:'#0A4A3D',900:'#081617',950:'#081617' }
           },
           boxShadow: {
             soft: '0 2px 15px -3px rgba(0,0,0,0.07), 0 10px 20px -2px rgba(0,0,0,0.04)',
@@ -539,13 +539,11 @@ main .rounded-2xl .font-display.text-3xl {
 <body class="bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans antialiased min-h-screen transition-colors duration-300">
   <div id="app" class="min-h-screen flex flex-col"></div>
   <div id="splash">
-    <div class="logo">
-      <svg width="34" height="34" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"/>
-      </svg>
+    <div class="logo" style="background:transparent;padding:0;">
+      <img src="icon-192.png" width="72" height="72" alt="Smart Queue" style="display:block;border-radius:18px;" />
     </div>
-    <h1>Smart Hospital Queue</h1>
-    <p class="sub">Intelligent Time Management</p>
+    <h1>Smart Queue</h1>
+    <p class="sub">Live queue · Smart ETA</p>
     <div class="bar-wrap"><div id="splash-bar"></div></div>
     <p id="splash-err"></p>
     <button id="continue-btn" type="button" onclick="typeof hideSplash==='function'&&hideSplash()">Continue</button>
@@ -2715,12 +2713,12 @@ function refreshIcons() {
 
 
 const ROLE_BRANDING = {
-  doctor: { title: 'Doctor', tagline: 'Welcome Doctor — consultation & queue control', icon: 'stethoscope', gradient: 'from-violet-500 to-purple-700', accent: 'violet', ring: 'focus:ring-violet-500', btn: 'bg-violet-600 hover:bg-violet-700', chip: 'bg-violet-50 dark:bg-violet-950 text-violet-700 dark:text-violet-300 border-violet-200 dark:border-violet-800' },
-  reception: { title: 'Reception Desk', tagline: 'Register patients & manage the queue', icon: 'clipboard-list', gradient: 'from-sky-500 to-blue-700', accent: 'sky', ring: 'focus:ring-sky-500', btn: 'bg-sky-600 hover:bg-sky-700', chip: 'bg-sky-50 dark:bg-sky-950 text-sky-700 dark:text-sky-300 border-sky-200 dark:border-sky-800' },
-  patient: { title: 'My Queue', tagline: "We'll track your token live — no waiting room needed", icon: 'smartphone', gradient: 'from-emerald-500 to-teal-600', accent: 'emerald', ring: 'focus:ring-emerald-500', btn: 'bg-emerald-600 hover:bg-emerald-700', chip: 'bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800' },
-  manager: { title: 'Hospital Manager', tagline: 'Doctors, appointments & reports', icon: 'briefcase', gradient: 'from-rose-500 to-orange-600', accent: 'rose', ring: 'focus:ring-rose-500', btn: 'bg-rose-600 hover:bg-rose-700', chip: 'bg-rose-50 dark:bg-rose-950 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800' },
+  doctor: { title: 'Doctor', tagline: 'Consultation and queue control', icon: 'stethoscope', gradient: 'from-brand-500 to-brand-800', accent: 'brand', ring: 'focus:ring-brand-500', btn: 'bg-brand-600 hover:bg-brand-700', chip: 'bg-brand-50 dark:bg-brand-950 text-brand-700 dark:text-brand-300 border-brand-200 dark:border-brand-800' },
+  reception: { title: 'Reception Desk', tagline: 'Register patients and manage the queue', icon: 'clipboard-list', gradient: 'from-brand-500 to-brand-800', accent: 'brand', ring: 'focus:ring-brand-500', btn: 'bg-brand-600 hover:bg-brand-700', chip: 'bg-brand-50 dark:bg-brand-950 text-brand-700 dark:text-brand-300 border-brand-200 dark:border-brand-800' },
+  patient: { title: 'My Queue', tagline: 'Live token and wait estimate — no app download', icon: 'smartphone', gradient: 'from-brand-500 to-brand-800', accent: 'brand', ring: 'focus:ring-brand-500', btn: 'bg-brand-600 hover:bg-brand-700', chip: 'bg-brand-50 dark:bg-brand-950 text-brand-700 dark:text-brand-300 border-brand-200 dark:border-brand-800' },
+  manager: { title: 'Hospital Manager', tagline: 'Doctors, staff and reports', icon: 'briefcase', gradient: 'from-brand-500 to-brand-800', accent: 'brand', ring: 'focus:ring-brand-500', btn: 'bg-brand-600 hover:bg-brand-700', chip: 'bg-brand-50 dark:bg-brand-950 text-brand-700 dark:text-brand-300 border-brand-200 dark:border-brand-800' },
 };
-const DEFAULT_BRANDING = { title: 'Smart Hospital Queue', tagline: 'Live digital tokens · Accurate ETA · Zero long waits', icon: 'clock', gradient: 'from-brand-500 to-teal-600', accent: 'brand', ring: 'focus:ring-brand-500', btn: 'bg-brand-600 hover:bg-brand-700', chip: 'bg-brand-50 dark:bg-brand-950 text-brand-700 dark:text-brand-300 border-brand-200 dark:border-brand-800' };
+const DEFAULT_BRANDING = { title: 'Smart Queue', tagline: 'Live Queue · Smart ETA · Less Waiting', icon: 'clock', gradient: 'from-brand-500 to-teal-600', accent: 'brand', ring: 'focus:ring-brand-500', btn: 'bg-brand-600 hover:bg-brand-700', chip: 'bg-brand-50 dark:bg-brand-950 text-brand-700 dark:text-brand-300 border-brand-200 dark:border-brand-800' };
 
 function renderLogin(root) {
   const hasHospital = !!store.getState().hospitalId;
@@ -2745,8 +2743,8 @@ function renderLogin(root) {
                 <img src="${escapeHtml(store.getState().hospitalLogo)}" alt="Hospital logo" class="w-full h-full object-cover" />
               </div>
             ` : `
-              <div class="inline-flex w-16 h-16 rounded-2xl bg-gradient-to-br ${branding.gradient} text-white items-center justify-center shadow-glow mb-5">
-                ${icon(branding.icon, 32)}
+              <div class="inline-flex w-16 h-16 rounded-2xl overflow-hidden shadow-glow mb-5">
+                <img src="icon-192.png" alt="Smart Queue" class="w-full h-full object-cover" />
               </div>
             `}
             <h1 class="font-display text-2xl sm:text-3xl font-extrabold tracking-tight">${branding.title}</h1>
@@ -2788,7 +2786,7 @@ function renderLogin(root) {
                 </button>
               ` : ''}
             </div>
-            <p class="text-center text-[10px] text-slate-400 mt-4">Powered by Smart Hospital Queue Platform</p>
+            <p class="text-center text-[10px] text-slate-400 mt-4">Powered by Smart Queue</p>
           </div>
 
           <!-- Role cards -->
@@ -2901,7 +2899,7 @@ function renderLogin(root) {
           </div>
 
           <p class="text-center text-[11px] text-slate-400 mt-8">
-            ${hasHospital ? `<button data-action="change-hospital" class="underline hover:text-slate-600">Change hospital</button> · ` : ''}Version 1.0
+            ${hasHospital ? `<button data-action="change-hospital" class="underline hover:text-slate-600">Change hospital</button>` : 'Smart Queue'}
           </p>
         </div>
       </div>

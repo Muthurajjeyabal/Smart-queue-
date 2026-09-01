@@ -1,25 +1,25 @@
 {
-  "name": "Smart Hospital Queue",
-  "short_name": "SHQ",
-  "description": "Live digital tokens, accurate ETA, zero long waits.",
+  "name": "Smart Queue",
+  "short_name": "Smart Queue",
+  "description": "Live tokens, smart wait estimates, four screens in sync.",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
-  "background_color": "#f8fafc",
-  "theme_color": "#0d9488",
+  "background_color": "#F5F7F6",
+  "theme_color": "#0F6E5C",
   "orientation": "portrait-primary",
   "icons": [
     {
       "src": "icon-192.png",
       "sizes": "192x192",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
     },
     {
       "src": "icon-512.png",
       "sizes": "512x512",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
     }
   ]
 }

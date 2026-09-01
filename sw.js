@@ -4,7 +4,7 @@
 // page — this app shows live queue data and must always fetch
 // fresh from the network. Only truly static icon/manifest files
 // are cached, and only as an offline fallback.
-const CACHE_NAME = 'shq-shell-v2';
+const CACHE_NAME = 'shq-shell-v3';
 const STATIC_FILES = ['./manifest.json', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', (event) => {
