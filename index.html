@@ -2844,9 +2844,9 @@ function renderLogin(root) {
           <!-- Staff PIN gate (Reception/Doctor) -->
           <div id="pin-gate" class="hidden mt-6 animate-slide-up">
             <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card p-5">
-              <button data-action="back-roles" class="text-sm text-slate-500 hover:text-brand-600 flex items-center gap-1 mb-4">
+              ${PENDING_ROLE ? '' : `<button data-action="back-roles" class="text-sm text-slate-500 hover:text-brand-600 flex items-center gap-1 mb-4">
                 ${icon('arrow-left', 16)} Back
-              </button>
+              </button>`}
               <div class="flex items-center gap-1.5 mb-3">
                 <span class="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full border ${branding.chip}">
                   ${icon('lock', 11)} Staff only
@@ -2866,9 +2866,9 @@ function renderLogin(root) {
           <!-- Doctor selection (multi-doctor hospitals) -->
           <div id="doctor-select-gate" class="hidden mt-6 animate-slide-up">
             <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card p-5">
-              <button data-action="back-roles" class="text-sm text-slate-500 hover:text-brand-600 flex items-center gap-1 mb-4">
+              ${PENDING_ROLE ? '' : `<button data-action="back-roles" class="text-sm text-slate-500 hover:text-brand-600 flex items-center gap-1 mb-4">
                 ${icon('arrow-left', 16)} Back
-              </button>
+              </button>`}
               <h2 id="doctor-select-title" class="font-display font-bold text-lg mb-1">Welcome, Doctor</h2>
               <p id="doctor-select-subtitle" class="text-xs text-slate-500 mb-4">Please select your name to continue.</p>
               <div id="doctor-select-list" class="space-y-2"></div>
@@ -2879,9 +2879,9 @@ function renderLogin(root) {
           <div id="patient-login" class="${hasHospital && PENDING_ROLE === 'patient' ? '' : 'hidden'} mt-6 animate-slide-up">
             <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card p-5">
               <div class="flex items-center justify-between mb-4">
-                <button data-action="back-roles" class="text-sm text-slate-500 hover:text-brand-600 flex items-center gap-1">
+                ${PENDING_ROLE === 'patient' ? '<span></span>' : `<button data-action="back-roles" class="text-sm text-slate-500 hover:text-brand-600 flex items-center gap-1">
                   ${icon('arrow-left', 16)} Back
-                </button>
+                </button>`}
                 ${languageSelectHtml()}
               </div>
               <h2 class="font-display font-bold text-lg">${t('myQueue')}</h2>
@@ -3211,6 +3211,22 @@ function renderLogin(root) {
   });
 
   root.querySelectorAll('[data-action="back-roles"]').forEach(b => b.addEventListener('click', () => {
+    // Dedicated role URLs (reception.html / doctor.html / …) must never
+    // fall back to the 4-role picker.
+    if (PENDING_ROLE === 'reception' || PENDING_ROLE === 'doctor' || PENDING_ROLE === 'manager') {
+      root.querySelector('#patient-login')?.classList.add('hidden');
+      root.querySelector('#role-select')?.classList.add('hidden');
+      if (PENDING_ROLE === 'manager') showPinGate('manager');
+      else enterStaffRole(PENDING_ROLE);
+      return;
+    }
+    if (PENDING_ROLE === 'patient') {
+      root.querySelector('#pin-gate')?.classList.add('hidden');
+      root.querySelector('#doctor-select-gate')?.classList.add('hidden');
+      root.querySelector('#role-select')?.classList.add('hidden');
+      root.querySelector('#patient-login')?.classList.remove('hidden');
+      return;
+    }
     root.querySelector('#patient-login')?.classList.add('hidden');
     root.querySelector('#pin-gate')?.classList.add('hidden');
     root.querySelector('#doctor-select-gate')?.classList.add('hidden');
@@ -5797,6 +5813,17 @@ function route() {
   }
 
   const hash = window.location.hash || '#/';
+  {
+    const qIdx0 = hash.indexOf('?');
+    const params0 = new URLSearchParams(qIdx0 >= 0 ? hash.slice(qIdx0 + 1) : '');
+    const roleFromUrl = params0.get('role');
+    if (roleFromUrl) {
+      PENDING_ROLE = roleFromUrl;
+      sessionStorage.setItem('shq_locked_role', roleFromUrl);
+    } else if (!PENDING_ROLE) {
+      PENDING_ROLE = sessionStorage.getItem('shq_locked_role');
+    }
+  }
   const qIdx = hash.indexOf('?');
   const cleanHash = qIdx >= 0 ? hash.slice(0, qIdx) : hash; // strip ?role=/?h= before path matching
   const path = cleanHash.replace(/^#/, '') || '/';
@@ -5914,7 +5941,12 @@ async function boot() {
     const qIdx = hash.indexOf('?');
     const params = new URLSearchParams(qIdx >= 0 ? hash.slice(qIdx + 1) : '');
     const urlCode = params.get('h');
-    PENDING_ROLE = params.get('role'); // 'reception' | 'doctor' | 'patient' | null — from dedicated shortcut links
+    PENDING_ROLE = params.get('role'); // 'reception' | 'doctor' | 'patient' | 'manager' | null
+    if (PENDING_ROLE) {
+      sessionStorage.setItem('shq_locked_role', PENDING_ROLE);
+    } else {
+      PENDING_ROLE = sessionStorage.getItem('shq_locked_role');
+    }
 
     if (urlCode) {
       await store.initHospitalByCode(urlCode);
